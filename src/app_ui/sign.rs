@@ -1,7 +1,7 @@
-use crate::tx_types::{ParsedTransaction, XelisTxType, ParsedTransfer};
 use crate::crypto::address::format_address_safe;
+use crate::tx_types::{ParsedTransaction, ParsedTransfer, XelisTxType};
 use crate::AppSW;
-use ledger_device_sdk::nbgl::{NbglReview, Field};
+use ledger_device_sdk::nbgl::{Field, NbglReview};
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -12,16 +12,19 @@ pub fn ui_display_tx(tx: &ParsedTransaction) -> Result<bool, AppSW> {
     let mut owned: Vec<(String, String)> = Vec::new();
 
     match &tx.tx_type {
-        XelisTxType::Transfer { transfers, total_count } => {
+        XelisTxType::Transfer {
+            transfers,
+            total_count,
+        } => {
             owned.push(("Type".into(), "Transfer".into()));
             owned.push(("Outputs".into(), total_count.to_string()));
 
             // Show EVERY output with address * asset * amount [* extra]
             for (i, t) in transfers.iter().enumerate() {
                 let label = format!("Output {}", i + 1);
-                let addr  = format_address_safe(&t.recipient, true, true, true);
+                let addr = format_address_safe(&t.recipient, true, true, true);
                 let asset = format_asset(&t.asset);
-                let amt   = format_amount(t.amount);
+                let amt = format_amount(t.amount);
 
                 let mut value = format!("{addr}\n{asset}\n{amt}");
                 owned.push((label, value));
@@ -47,21 +50,34 @@ pub fn ui_display_tx(tx: &ParsedTransaction) -> Result<bool, AppSW> {
             owned.push(("Deposits".into(), c.deposits_count.to_string()));
         }
 
-        XelisTxType::DeployContract { has_constructor, max_gas } => {
+        XelisTxType::DeployContract {
+            has_constructor,
+            max_gas,
+        } => {
             owned.push(("Type".into(), "Deploy Contract".into()));
-            owned.push(("Constructor".into(), if *has_constructor { "Yes".into() } else { "No".into() }));
+            owned.push((
+                "Constructor".into(),
+                if *has_constructor {
+                    "Yes".into()
+                } else {
+                    "No".into()
+                },
+            ));
             owned.push(("Max Gas".into(), max_gas.to_string()));
         }
     }
 
     // Fee + Nonce last
-    owned.push(("Fee".into(),   format_amount(tx.fee)));
+    owned.push(("Fee".into(), format_amount(tx.fee)));
     owned.push(("Nonce".into(), tx.nonce.to_string()));
 
     // Now build the NBGL fields borrowing from `owned`
     let mut fields: Vec<Field> = Vec::with_capacity(owned.len());
     for (name, value) in &owned {
-        fields.push(Field { name: name.as_str(), value: value.as_str() });
+        fields.push(Field {
+            name: name.as_str(),
+            value: value.as_str(),
+        });
     }
 
     let review = NbglReview::new()

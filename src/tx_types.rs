@@ -29,14 +29,14 @@ pub struct ParsedContract {
 
 #[derive(Clone, Debug)]
 pub enum XelisTxType {
-    Transfer { 
+    Transfer {
         transfers: Vec<ParsedTransfer>,
         total_count: u8,
     },
     Burn(ParsedBurn),
     MultiSig(ParsedMultiSig),
     InvokeContract(ParsedContract),
-    DeployContract { 
+    DeployContract {
         has_constructor: bool,
         max_gas: u64,
     },

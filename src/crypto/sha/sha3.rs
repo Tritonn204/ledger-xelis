@@ -1,15 +1,12 @@
 #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals)]
 
-use core::{mem::MaybeUninit, ptr};
 use crate::AppSW;
+use core::{mem::MaybeUninit, ptr};
 
 // Pull the ABI-correct types & functions from the sys crate (tiny, no std)
 use ledger_secure_sdk_sys::{
-    cx_sha3_t,
-    cx_sha3_init_no_throw,
-    cx_keccak_init_no_throw,
-    cx_hash_no_throw,
-    CX_LAST, CX_NO_REINIT,
+    cx_hash_no_throw, cx_keccak_init_no_throw, cx_sha3_init_no_throw, cx_sha3_t, CX_LAST,
+    CX_NO_REINIT,
 };
 
 /// SHA3-512 over `data`, returns 64-byte digest.
@@ -26,7 +23,7 @@ pub fn sha3_512(data: &[u8]) -> Result<[u8; 64], AppSW> {
         // 2) update with data
         let err = cx_hash_no_throw(
             (&mut ctx as *mut cx_sha3_t).cast(),
-            0,                      // mode: update
+            0, // mode: update
             data.as_ptr(),
             data.len(),
             ptr::null_mut(),

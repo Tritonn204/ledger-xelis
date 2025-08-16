@@ -1,7 +1,7 @@
 use crate::app_ui::address::ui_display_pk;
-use crate::{AppSW, utils::Bip32Path};
-use crate::crypto::{ristretto::*, public_key::*, address::*};
 use crate::crypto::secure::with_derived_key;
+use crate::crypto::{address::*, public_key::*, ristretto::*};
+use crate::{utils::Bip32Path, AppSW};
 use ledger_device_sdk::io::Comm;
 
 pub fn handler_get_public_key(comm: &mut Comm, display: bool) -> Result<(), AppSW> {
@@ -9,9 +9,9 @@ pub fn handler_get_public_key(comm: &mut Comm, display: bool) -> Result<(), AppS
     let path: Bip32Path = data.try_into()?;
 
     let (pk_le, _) = with_derived_key(path.as_ref(), |scalar, chain_code| {
-        let pk_comp = xelis_public_from_private(scalar.as_ref())
-            .map_err(|_| AppSW::KeyDeriveFail)?;
-        
+        let pk_comp =
+            xelis_public_from_private(scalar.as_ref()).map_err(|_| AppSW::KeyDeriveFail)?;
+
         Ok((pk_comp.to_le_bytes(), *chain_code.as_ref()))
     })?;
 

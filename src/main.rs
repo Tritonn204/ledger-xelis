@@ -18,23 +18,22 @@
 #![no_std]
 #![no_main]
 
-mod cx;
-mod utils;
 mod crypto;
-mod xlb;
+mod cx;
 mod tx_types;
+mod utils;
+mod xlb;
 mod app_ui {
     pub mod address;
     pub mod menu;
     pub mod sign;
 }
 mod handlers {
+    #[cfg(debug_assertions)]
+    pub mod debug_keys;
     pub mod get_public_key;
     pub mod get_version;
     pub mod sign_tx;
-    #[cfg(debug_assertions)]
-    pub mod debug_keys;
-    
 }
 
 mod settings;
@@ -82,7 +81,7 @@ pub enum AppSW {
     VersionParsingFail = 0xB00A,
     WrongApduLength = StatusWords::BadLen as u16,
     MemoRequired = 0xB00C,
-    MemoInvalid  = 0xB00D,
+    MemoInvalid = 0xB00D,
     InvalidCommitment = 0xC000,
     BlindersRequired = 0xC001,
     InvalidCompressedRistretto = 0xC002,
@@ -102,9 +101,17 @@ impl From<AppSW> for Reply {
 pub enum Instruction {
     GetVersion,
     GetAppName,
-    GetPubkey { display: bool },
-    SignTx { chunk: u8, more: bool },
-    LoadMemo { chunk: u8, more: bool },
+    GetPubkey {
+        display: bool,
+    },
+    SignTx {
+        chunk: u8,
+        more: bool,
+    },
+    LoadMemo {
+        chunk: u8,
+        more: bool,
+    },
     SendBlinders,
     #[cfg(debug_assertions)]
     DebugTestKeys,
@@ -132,16 +139,16 @@ impl TryFrom<ApduHeader> for Instruction {
                 display: value.p1 != 0,
             }),
             (6, P1_CHUNK_FIRST, P2_MORE_DATA)
-            | (6, 1..=P1_CHUNK_MAX, P2_CHUNK_LAST | P2_MORE_DATA) => {
-                Ok(Instruction::SignTx {
+            | (6, 1..=P1_CHUNK_MAX, P2_CHUNK_LAST | P2_MORE_DATA) => Ok(Instruction::SignTx {
+                chunk: value.p1,
+                more: value.p2 == P2_MORE_DATA,
+            }),
+            (0x10, P1_CHUNK_FIRST..=P1_CHUNK_MAX, P2_CHUNK_LAST | P2_MORE_DATA) => {
+                Ok(Instruction::LoadMemo {
                     chunk: value.p1,
                     more: value.p2 == P2_MORE_DATA,
                 })
             }
-            (0x10, P1_CHUNK_FIRST..=P1_CHUNK_MAX, P2_CHUNK_LAST | P2_MORE_DATA) => Ok(Instruction::LoadMemo {
-                chunk: value.p1,
-                more: value.p2 == P2_MORE_DATA,
-            }),
             (0x12, _, _) => Ok(Instruction::SendBlinders),
             #[cfg(debug_assertions)]
             (0xF0, _, _) => Ok(Instruction::DebugTestKeys),
@@ -160,8 +167,15 @@ pub fn show_status_and_home_if_needed(
 ) {
     enum Action {
         Nothing,
-        Status { ok: bool, ty: StatusType, go_home: bool, reset: bool },
-        Home { reset: bool },
+        Status {
+            ok: bool,
+            ty: StatusType,
+            go_home: bool,
+            reset: bool,
+        },
+        Home {
+            reset: bool,
+        },
     }
 
     let action = match ins {
@@ -174,11 +188,11 @@ pub fn show_status_and_home_if_needed(
                 // Last chunk - show result
                 match status {
                     AppSW::Ok => Action::Home { reset: false },
-                    AppSW::Deny => Action::Status { 
-                        ok: false, 
-                        ty: StatusType::Transaction, 
-                        go_home: true, 
-                        reset: true 
+                    AppSW::Deny => Action::Status {
+                        ok: false,
+                        ty: StatusType::Transaction,
+                        go_home: true,
+                        reset: true,
                     },
                     _ => Action::Nothing,
                 }
@@ -187,25 +201,47 @@ pub fn show_status_and_home_if_needed(
 
         // Blinders step: no UI needed, just handle errors
         Instruction::SendBlinders => match status {
-            AppSW::Ok => Action::Nothing,  // Silent success
-            _ => Action::Status { ok: false, ty: StatusType::Transaction, go_home: true, reset: true },
+            AppSW::Ok => Action::Nothing, // Silent success
+            _ => Action::Status {
+                ok: false,
+                ty: StatusType::Transaction,
+                go_home: true,
+                reset: true,
+            },
         },
 
         // Signing step:
         Instruction::SignTx { .. } => {
             if ctx.sign_completed {
                 let ok = (status == AppSW::Ok) && ctx.sign_succeeded;
-                Action::Status { ok, ty: StatusType::Transaction, go_home: true, reset: true }
+                Action::Status {
+                    ok,
+                    ty: StatusType::Transaction,
+                    go_home: true,
+                    reset: true,
+                }
             } else if status != AppSW::Ok {
-                Action::Status { ok: false, ty: StatusType::Transaction, go_home: true, reset: true }
+                Action::Status {
+                    ok: false,
+                    ty: StatusType::Transaction,
+                    go_home: true,
+                    reset: true,
+                }
             } else {
                 Action::Nothing
             }
         }
 
         // Address display:
-        Instruction::GetPubkey { display: true } if status == AppSW::Ok || status == AppSW::Deny => {
-            Action::Status { ok: status == AppSW::Ok, ty: StatusType::Address, go_home: true, reset: false }
+        Instruction::GetPubkey { display: true }
+            if status == AppSW::Ok || status == AppSW::Deny =>
+        {
+            Action::Status {
+                ok: status == AppSW::Ok,
+                ty: StatusType::Address,
+                go_home: true,
+                reset: false,
+            }
         }
 
         _ => Action::Nothing,
@@ -216,16 +252,26 @@ pub fn show_status_and_home_if_needed(
         Action::Nothing => {}
         Action::Home { reset } => {
             home.show_and_return();
-            if reset { ctx.reset(); }
+            if reset {
+                ctx.reset();
+            }
         }
-        Action::Status { ok, ty, go_home, reset } => {
+        Action::Status {
+            ok,
+            ty,
+            go_home,
+            reset,
+        } => {
             NbglReviewStatus::new().status_type(ty).show(ok);
-            if go_home { home.show_and_return(); }
-            if reset { ctx.reset(); }
+            if go_home {
+                home.show_and_return();
+            }
+            if reset {
+                ctx.reset();
+            }
         }
     }
 }
-
 
 #[no_mangle]
 extern "C" fn sample_main() {
@@ -241,8 +287,14 @@ extern "C" fn sample_main() {
         let ins: Instruction = comm.next_command();
 
         let status = match handle_apdu(&mut comm, &ins, &mut tx_ctx) {
-            Ok(()) => { comm.reply_ok(); AppSW::Ok }
-            Err(sw) => { comm.reply(sw); sw }
+            Ok(()) => {
+                comm.reply_ok();
+                AppSW::Ok
+            }
+            Err(sw) => {
+                comm.reply(sw);
+                sw
+            }
         };
 
         show_status_and_home_if_needed(&mut comm, &mut home, &mut tx_ctx, &ins, status);
@@ -250,7 +302,10 @@ extern "C" fn sample_main() {
 }
 
 fn handle_apdu(comm: &mut Comm, ins: &Instruction, ctx: &mut TxContext) -> Result<(), AppSW> {
-    if !matches!(ins, Instruction::SignTx { .. } | Instruction::LoadMemo { .. } | Instruction::SendBlinders) {
+    if !matches!(
+        ins,
+        Instruction::SignTx { .. } | Instruction::LoadMemo { .. } | Instruction::SendBlinders
+    ) {
         ctx.reset();
     }
 
@@ -264,7 +319,9 @@ fn handle_apdu(comm: &mut Comm, ins: &Instruction, ctx: &mut TxContext) -> Resul
         Instruction::SignTx { chunk, more } => handler_sign_tx(comm, *chunk, *more, ctx),
         #[cfg(debug_assertions)]
         Instruction::DebugTestKeys => handlers::debug_keys::handler_debug_keys(comm),
-        Instruction::LoadMemo { chunk, more } => handlers::sign_tx::handler_load_memo(comm, *chunk, *more, ctx),
+        Instruction::LoadMemo { chunk, more } => {
+            handlers::sign_tx::handler_load_memo(comm, *chunk, *more, ctx)
+        }
         Instruction::SendBlinders => handlers::sign_tx::handler_send_blinders(comm, ctx),
     }
 }

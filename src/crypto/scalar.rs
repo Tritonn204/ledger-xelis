@@ -1,10 +1,10 @@
-use crate::{AppSW, cx::*};
-use ledger_device_sdk::ecc::CxError;
-use ledger_secure_sdk_sys::CX_OK;
+use crate::alloc::string::ToString;
+use crate::crypto::{ristretto::CompressedRistretto, *};
+use crate::{cx::*, AppSW};
 use alloc::format;
 use alloc::string::String;
-use crate::crypto::{ *, ristretto::CompressedRistretto };
-use crate::alloc::string::ToString;
+use ledger_device_sdk::ecc::CxError;
+use ledger_secure_sdk_sys::CX_OK;
 
 /// Check if a scalar is zero
 pub fn is_zero(scalar: &[u8; 32]) -> bool {
@@ -15,12 +15,7 @@ pub fn is_zero(scalar: &[u8; 32]) -> bool {
 /// Input and output are in big-endian format
 pub fn scalar_reduce(scalar: &mut [u8; 32]) -> Result<(), CxError> {
     unsafe {
-        let result = cx_math_modm_no_throw(
-            scalar.as_mut_ptr(),
-            32,
-            L.as_ptr(),
-            32,
-        );
+        let result = cx_math_modm_no_throw(scalar.as_mut_ptr(), 32, L.as_ptr(), 32);
         if result != 0 {
             return Err(CxError::InvalidParameter);
         }
@@ -34,9 +29,9 @@ pub fn scalar_invert(scalar: &[u8; 32]) -> Result<[u8; 32], AppSW> {
     if is_zero(scalar) {
         return Err(AppSW::KeyDeriveFail);
     }
-    
+
     let mut result = [0u8; 32];
-    
+
     unsafe {
         let res = cx_math_powm_no_throw(
             result.as_mut_ptr(),
@@ -50,7 +45,7 @@ pub fn scalar_invert(scalar: &[u8; 32]) -> Result<[u8; 32], AppSW> {
             return Err(AppSW::KeyDeriveFail);
         }
     }
-    
+
     Ok(result)
 }
 
@@ -58,13 +53,8 @@ pub fn scalar_invert(scalar: &[u8; 32]) -> Result<[u8; 32], AppSW> {
 /// All inputs and outputs are in big-endian format
 pub fn scalar_add(result: &mut [u8; 32], a: &[u8; 32], b: &[u8; 32]) -> Result<(), CxError> {
     unsafe {
-        let res = cx_math_addm_no_throw(
-            result.as_mut_ptr(),
-            a.as_ptr(),
-            b.as_ptr(),
-            L.as_ptr(),
-            32,
-        );
+        let res =
+            cx_math_addm_no_throw(result.as_mut_ptr(), a.as_ptr(), b.as_ptr(), L.as_ptr(), 32);
         if res != 0 {
             return Err(CxError::InvalidParameter);
         }
@@ -76,13 +66,8 @@ pub fn scalar_add(result: &mut [u8; 32], a: &[u8; 32], b: &[u8; 32]) -> Result<(
 /// All inputs and outputs are in big-endian format
 pub fn scalar_subtract(result: &mut [u8; 32], a: &[u8; 32], b: &[u8; 32]) -> Result<(), CxError> {
     unsafe {
-        let res = cx_math_subm_no_throw(
-            result.as_mut_ptr(),
-            a.as_ptr(),
-            b.as_ptr(),
-            L.as_ptr(),
-            32,
-        );
+        let res =
+            cx_math_subm_no_throw(result.as_mut_ptr(), a.as_ptr(), b.as_ptr(), L.as_ptr(), 32);
         if res != 0 {
             return Err(CxError::InvalidParameter);
         }
@@ -94,13 +79,8 @@ pub fn scalar_subtract(result: &mut [u8; 32], a: &[u8; 32], b: &[u8; 32]) -> Res
 /// All inputs and outputs are in big-endian format
 pub fn scalar_multiply(result: &mut [u8; 32], a: &[u8; 32], b: &[u8; 32]) -> Result<(), CxError> {
     unsafe {
-        let res = cx_math_multm_no_throw(
-            result.as_mut_ptr(),
-            a.as_ptr(),
-            b.as_ptr(),
-            L.as_ptr(),
-            32,
-        );
+        let res =
+            cx_math_multm_no_throw(result.as_mut_ptr(), a.as_ptr(), b.as_ptr(), L.as_ptr(), 32);
         if res != 0 {
             return Err(CxError::InvalidParameter);
         }
@@ -118,10 +98,10 @@ pub fn scalar_random(result: &mut [u8; 32]) -> Result<(), AppSW> {
             return Err(AppSW::CryptoError);
         }
     }
-    
+
     // Ensure big-endian and reduce modulo L
     scalar_reduce(result).map_err(|_| AppSW::CryptoError)?;
-    
+
     Ok(())
 }
 
@@ -131,14 +111,14 @@ pub fn scalar_random(result: &mut [u8; 32]) -> Result<(), AppSW> {
 pub fn scalar_from_bytes_wide(bytes: &[u8; 64]) -> Result<[u8; 32], AppSW> {
     // Take the 64-byte input and reduce it modulo L
     // We'll use the CX library's modular reduction with extended precision
-    
+
     let mut wide = *bytes; // [u8; 64]
     let rc = unsafe {
         cx_math_modm_no_throw(
             wide.as_mut_ptr(),
-            wide.len(),           // 64
+            wide.len(), // 64
             L.as_ptr(),
-            L.len(),           // 32
+            L.len(), // 32
         )
     };
     if rc != 0 {
@@ -155,23 +135,23 @@ pub fn scalar_from_bytes_wide(bytes: &[u8; 64]) -> Result<[u8; 32], AppSW> {
 /// Create a deterministic scalar from seed material (for nonce generation)
 /// Uses HMAC-like construction for deterministic randomness
 pub fn scalar_deterministic(
-    result: &mut [u8; 32], 
-    key: &[u8; 32], 
-    message: &[u8]
+    result: &mut [u8; 32],
+    key: &[u8; 32],
+    message: &[u8],
 ) -> Result<(), AppSW> {
     // Simple deterministic approach: Hash(key || message)
     // In production, you'd want proper HMAC or RFC6979
-    
+
     let mut combined = alloc::vec::Vec::new();
     combined.extend_from_slice(key);
     combined.extend_from_slice(message);
-    
+
     // Hash with SHA3-512 for wide reduction
     let hash = crate::crypto::sha::sha3_512(&combined)?;
-    
+
     // Reduce to scalar
     *result = scalar_from_bytes_wide(&hash)?;
-    
+
     Ok(())
 }
 
@@ -189,7 +169,7 @@ pub fn scalar_is_valid(scalar: &[u8; 32]) -> bool {
     if is_zero(scalar) {
         return false;
     }
-    
+
     // Check if less than L (this is a simplified check)
     // In big-endian, we can compare byte by byte from left to right
     for i in 0..32 {
@@ -200,7 +180,7 @@ pub fn scalar_is_valid(scalar: &[u8; 32]) -> bool {
         }
         // If equal, continue to next byte
     }
-    
+
     // If we get here, scalar == L, which is invalid
     false
 }

@@ -1,7 +1,7 @@
 use crate::{crypto::ristretto::*, AppSW};
+use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::format;
 
 pub struct XelisPublicKey {
     pub compressed: CompressedRistretto,
@@ -9,7 +9,7 @@ pub struct XelisPublicKey {
 
 impl XelisPublicKey {
     pub fn new(compressed: CompressedRistretto) -> Self {
-      Self { compressed }
+        Self { compressed }
     }
 
     pub fn from_private_key(private_key: &[u8; 32]) -> Result<Self, AppSW> {

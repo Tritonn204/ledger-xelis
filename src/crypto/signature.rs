@@ -1,4 +1,4 @@
-use crate::crypto::{*, ristretto::*, scalar, scalar::*, sha::sha3_512};
+use crate::crypto::{ristretto::*, scalar, scalar::*, sha::sha3_512, *};
 use crate::cx::*;
 use crate::AppSW;
 use alloc::vec;
@@ -66,7 +66,9 @@ fn reduce_mod_l_wide_le_to_be(wide_le: &[u8; 64], out_be: &mut [u8; 32]) -> Resu
     tmp.reverse();
 
     let rc = unsafe { cx_math_modm_no_throw(tmp.as_mut_ptr() as *mut u8, 64, L.as_ptr(), 32) };
-    if rc != 0 { return Err(AppSW::CryptoError); }
+    if rc != 0 {
+        return Err(AppSW::CryptoError);
+    }
 
     // Result is BE, right-aligned in `tmp`
     out_be.copy_from_slice(&tmp[64 - 32..]);
@@ -79,9 +81,9 @@ fn reduce_mod_l_wide_le_to_be(wide_le: &[u8; 64], out_be: &mut [u8; 32]) -> Resu
 ///   e = H512(A||msg||R) (wide mod L)
 ///   s = x^{-1}·e + k
 pub fn schnorr_sign(
-    private_key_be: &[u8; 32],        // BE
+    private_key_be: &[u8; 32],               // BE
     pubkey_compressed: &CompressedRistretto, // A = x^{-1}·H (compressed)
-    message_hash: &[u8],              // what you actually commit to (e.g., first 32 of SHA3-512(tx))
+    message_hash: &[u8], // what you actually commit to (e.g., first 32 of SHA3-512(tx))
 ) -> Result<XelisSignature, AppSW> {
     // 0) Sanity: secret != 0
     if scalar::is_zero(private_key_be) {
@@ -96,7 +98,7 @@ pub fn schnorr_sign(
 
     // 2) R = k·H
     let r_point = scalar_mult_ristretto(&k_be, &XELIS_H_POINT).map_err(|_| AppSW::TxSignFail)?;
-    let r_comp  = r_point.compress().map_err(|_| AppSW::TxSignFail)?;
+    let r_comp = r_point.compress().map_err(|_| AppSW::TxSignFail)?;
 
     // 3) e = reduce_wide( SHA3-512( A || msg || R ) )
     let e_be = xelis_challenge_from_hash(&pubkey_compressed, &message_hash[..], &r_comp)?;
@@ -104,11 +106,9 @@ pub fn schnorr_sign(
     // 4) s = x^{-1}·e + k
     let inv_sk_be = scalar_invert(&private_key_be)?; // returns [u8;32]
     let mut e_over_sk_be = [0u8; 32];
-    scalar_multiply(&mut e_over_sk_be, &e_be, &inv_sk_be)
-        .map_err(|_| AppSW::TxSignFail)?;
+    scalar_multiply(&mut e_over_sk_be, &e_be, &inv_sk_be).map_err(|_| AppSW::TxSignFail)?;
     let mut s_be = [0u8; 32];
-    scalar_add(&mut s_be, &k_be, &e_over_sk_be)
-        .map_err(|_| AppSW::TxSignFail)?;
+    scalar_add(&mut s_be, &k_be, &e_over_sk_be).map_err(|_| AppSW::TxSignFail)?;
 
     Ok(XelisSignature { s: s_be, e: e_be })
 }
