@@ -1,78 +1,100 @@
-/*****************************************************************************
- *   Ledger App Boilerplate Rust.
- *   (c) 2023 Ledger SAS.
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *****************************************************************************/
-use crate::handlers::sign_tx::Tx;
+use crate::tx_types::{ParsedTransaction, XelisTxType, ParsedTransfer};
+use crate::crypto::address::format_address_safe;
 use crate::AppSW;
-
-use crate::settings::Settings;
-use include_gif::include_gif;
-use ledger_device_sdk::nbgl::{Field, NbglGlyph, NbglReview};
+use ledger_device_sdk::nbgl::{NbglReview, Field};
 
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
-/// Displays a transaction and returns true if user approved it.
-///
-/// This method can return [`AppSW::TxDisplayFail`] error if the coin name length is too long.
-///
-/// # Arguments
-///
-/// * `tx` - Transaction to be displayed for validation
-pub fn ui_display_tx(tx: &Tx) -> Result<bool, AppSW> {
-    let value_str = format!("{} {}", tx.coin, tx.value);
-    let to_str = format!("0x{}", hex::encode(tx.to).to_uppercase());
+pub fn ui_display_tx(tx: &ParsedTransaction) -> Result<bool, AppSW> {
+    // Build all owned (name, value) pairs first, then borrow from them.
+    let mut owned: Vec<(String, String)> = Vec::new();
 
-    // Define transaction review fields
-    let my_fields = [
-        Field {
-            name: "Amount",
-            value: value_str.as_str(),
-        },
-        Field {
-            name: "Destination",
-            value: to_str.as_str(),
-        },
-        Field {
-            name: "Memo",
-            value: tx.memo,
-        },
-    ];
+    match &tx.tx_type {
+        XelisTxType::Transfer { transfers, total_count } => {
+            owned.push(("Type".into(), "Transfer".into()));
+            owned.push(("Outputs".into(), total_count.to_string()));
 
-    // Create transaction review
+            // Show EVERY output with address * asset * amount [* extra]
+            for (i, t) in transfers.iter().enumerate() {
+                let label = format!("Output {}", i + 1);
+                let addr  = format_address_safe(&t.recipient, true, true, true);
+                let asset = format_asset(&t.asset);
+                let amt   = format_amount(t.amount);
 
-    // Load glyph from 64x64 4bpp gif file with include_gif macro. Creates an NBGL compatible glyph.
-    #[cfg(any(target_os = "stax", target_os = "flex"))]
-    const FERRIS: NbglGlyph = NbglGlyph::from_include(include_gif!("crab_64x64.gif", NBGL));
-    #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
-    const FERRIS: NbglGlyph = NbglGlyph::from_include(include_gif!("crab_14x14.gif", NBGL));
+                let mut value = format!("{addr}\n{asset}\n{amt}");
+                owned.push((label, value));
+            }
+        }
 
-    // Create NBGL review. Maximum number of fields and string buffer length can be customised
-    // with constant generic parameters of NbglReview. Default values are 32 and 1024 respectively.
-    let review: NbglReview = NbglReview::new()
-        .titles(
-            "Review transaction\nto send CRAB",
-            "",
-            "Sign transaction\nto send CRAB",
-        )
-        .glyph(&FERRIS);
+        XelisTxType::Burn(burn) => {
+            owned.push(("Type".into(), "Burn".into()));
+            owned.push(("Asset".into(), format_asset(&burn.asset)));
+            owned.push(("Amount".into(), format_amount(burn.amount)));
+        }
 
-    // If first setting switch is disabled do not display the transaction memo
-    let settings: Settings = Default::default();
-    if settings.get_element(0) == 0 {
-        Ok(review.show(&my_fields[0..2]))
-    } else {
-        Ok(review.show(&my_fields))
+        XelisTxType::MultiSig(ms) => {
+            owned.push(("Type".into(), "MultiSig".into()));
+            owned.push(("Threshold".into(), ms.threshold.to_string()));
+            owned.push(("Participants".into(), ms.participants_count.to_string()));
+        }
+
+        XelisTxType::InvokeContract(c) => {
+            owned.push(("Type".into(), "Contract Call".into()));
+            owned.push(("Contract".into(), format_hash(&c.contract)));
+            owned.push(("Max Gas".into(), c.max_gas.to_string()));
+            owned.push(("Deposits".into(), c.deposits_count.to_string()));
+        }
+
+        XelisTxType::DeployContract { has_constructor, max_gas } => {
+            owned.push(("Type".into(), "Deploy Contract".into()));
+            owned.push(("Constructor".into(), if *has_constructor { "Yes".into() } else { "No".into() }));
+            owned.push(("Max Gas".into(), max_gas.to_string()));
+        }
     }
+
+    // Fee + Nonce last
+    owned.push(("Fee".into(),   format_amount(tx.fee)));
+    owned.push(("Nonce".into(), tx.nonce.to_string()));
+
+    // Now build the NBGL fields borrowing from `owned`
+    let mut fields: Vec<Field> = Vec::with_capacity(owned.len());
+    for (name, value) in &owned {
+        fields.push(Field { name: name.as_str(), value: value.as_str() });
+    }
+
+    let review = NbglReview::new()
+        .titles("Review transaction", "", "Sign")
+        .light();
+
+    Ok(review.show(&fields))
+}
+
+fn format_asset(asset: &[u8; 32]) -> String {
+    const XELIS_ASSET: [u8; 32] = [0; 32]; // replace if main asset differs
+    if *asset == XELIS_ASSET {
+        "XELIS".to_string()
+    } else {
+        format!(
+            "{}...{}",
+            hex::encode(&asset[..4]).to_uppercase(),
+            hex::encode(&asset[28..]).to_uppercase()
+        )
+    }
+}
+
+fn format_amount(amount: u64) -> String {
+    // XELIS uses 8 decimals
+    let major = amount / 100_000_000;
+    let minor = amount % 100_000_000;
+    format!("{}.{:08}", major, minor)
+}
+
+fn format_hash(hash: &[u8; 32]) -> String {
+    format!(
+        "{}...{}",
+        hex::encode(&hash[..6]).to_uppercase(),
+        hex::encode(&hash[26..]).to_uppercase()
+    )
 }

@@ -11,5 +11,5 @@
 #     # Use an helper to parse the response, assert the values
 #     app_name, version = unpack_get_app_and_version_response(response.data)
 
-#     assert app_name == "app-boilerplate-rust"
+#     assert app_name == "ledger-xelis"
 #     assert version == "1.0.0"

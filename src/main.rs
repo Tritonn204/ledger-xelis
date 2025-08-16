@@ -18,7 +18,11 @@
 #![no_std]
 #![no_main]
 
+mod cx;
 mod utils;
+mod crypto;
+mod xlb;
+mod tx_types;
 mod app_ui {
     pub mod address;
     pub mod menu;
@@ -28,6 +32,9 @@ mod handlers {
     pub mod get_public_key;
     pub mod get_version;
     pub mod sign_tx;
+    #[cfg(debug_assertions)]
+    pub mod debug_keys;
+    
 }
 
 mod settings;
@@ -39,6 +46,7 @@ use handlers::{
     sign_tx::{handler_sign_tx, TxContext},
 };
 use ledger_device_sdk::io::{ApduHeader, Comm, Reply, StatusWords};
+use ledger_device_sdk::nbgl::NbglHomeAndSettings;
 
 ledger_device_sdk::set_panic!(ledger_device_sdk::exiting_panic);
 
@@ -48,13 +56,13 @@ extern crate alloc;
 use ledger_device_sdk::nbgl::{init_comm, NbglReviewStatus, StatusType};
 
 // P2 for last APDU to receive.
-const P2_SIGN_TX_LAST: u8 = 0x00;
+const P2_CHUNK_LAST: u8 = 0x00;
 // P2 for more APDU to receive.
-const P2_SIGN_TX_MORE: u8 = 0x80;
+const P2_MORE_DATA: u8 = 0x80;
 // P1 for first APDU number.
-const P1_SIGN_TX_START: u8 = 0x00;
+const P1_CHUNK_FIRST: u8 = 0x00;
 // P1 for maximum APDU number.
-const P1_SIGN_TX_MAX: u8 = 0x03;
+const P1_CHUNK_MAX: u8 = 0xFF;
 
 // Application status words.
 #[repr(u16)]
@@ -73,7 +81,15 @@ pub enum AppSW {
     KeyDeriveFail = 0xB009,
     VersionParsingFail = 0xB00A,
     WrongApduLength = StatusWords::BadLen as u16,
+    MemoRequired = 0xB00C,
+    MemoInvalid  = 0xB00D,
+    InvalidCommitment = 0xC000,
+    BlindersRequired = 0xC001,
+    InvalidCompressedRistretto = 0xC002,
     Ok = 0x9000,
+    CryptoError = 0x6F00,
+    AddressError = 0x6F01,
+    ParamError = 0x6F02,
 }
 
 impl From<AppSW> for Reply {
@@ -88,6 +104,10 @@ pub enum Instruction {
     GetAppName,
     GetPubkey { display: bool },
     SignTx { chunk: u8, more: bool },
+    LoadMemo { chunk: u8, more: bool },
+    SendBlinders,
+    #[cfg(debug_assertions)]
+    DebugTestKeys,
 }
 
 impl TryFrom<ApduHeader> for Instruction {
@@ -111,74 +131,129 @@ impl TryFrom<ApduHeader> for Instruction {
             (5, 0 | 1, 0) => Ok(Instruction::GetPubkey {
                 display: value.p1 != 0,
             }),
-            (6, P1_SIGN_TX_START, P2_SIGN_TX_MORE)
-            | (6, 1..=P1_SIGN_TX_MAX, P2_SIGN_TX_LAST | P2_SIGN_TX_MORE) => {
+            (6, P1_CHUNK_FIRST, P2_MORE_DATA)
+            | (6, 1..=P1_CHUNK_MAX, P2_CHUNK_LAST | P2_MORE_DATA) => {
                 Ok(Instruction::SignTx {
                     chunk: value.p1,
-                    more: value.p2 == P2_SIGN_TX_MORE,
+                    more: value.p2 == P2_MORE_DATA,
                 })
             }
-            (3..=6, _, _) => Err(AppSW::WrongP1P2),
+            (0x10, P1_CHUNK_FIRST..=P1_CHUNK_MAX, P2_CHUNK_LAST | P2_MORE_DATA) => Ok(Instruction::LoadMemo {
+                chunk: value.p1,
+                more: value.p2 == P2_MORE_DATA,
+            }),
+            (0x12, _, _) => Ok(Instruction::SendBlinders),
+            #[cfg(debug_assertions)]
+            (0xF0, _, _) => Ok(Instruction::DebugTestKeys),
+            (3..=6 | 0x10 | 0x12, _, _) => Err(AppSW::WrongP1P2),
             (_, _, _) => Err(AppSW::InsNotSupported),
         }
     }
 }
 
-fn show_status_and_home_if_needed(ins: &Instruction, tx_ctx: &mut TxContext, status: &AppSW) {
-    let (show_status, status_type) = match (ins, status) {
-        (Instruction::GetPubkey { display: true }, AppSW::Deny | AppSW::Ok) => {
-            (true, StatusType::Address)
+pub fn show_status_and_home_if_needed(
+    _comm: &mut Comm,
+    home: &mut NbglHomeAndSettings,
+    ctx: &mut TxContext,
+    ins: &Instruction,
+    status: AppSW,
+) {
+    enum Action {
+        Nothing,
+        Status { ok: bool, ty: StatusType, go_home: bool, reset: bool },
+        Home { reset: bool },
+    }
+
+    let action = match ins {
+        // Memo step:
+        Instruction::LoadMemo { more, .. } => {
+            if *more {
+                // Mid-stream, no UI needed
+                Action::Nothing
+            } else {
+                // Last chunk - show result
+                match status {
+                    AppSW::Ok => Action::Home { reset: false },
+                    AppSW::Deny => Action::Status { 
+                        ok: false, 
+                        ty: StatusType::Transaction, 
+                        go_home: true, 
+                        reset: true 
+                    },
+                    _ => Action::Nothing,
+                }
+            }
         }
-        (Instruction::SignTx { .. }, AppSW::Deny | AppSW::Ok) if tx_ctx.finished() => {
-            (true, StatusType::Transaction)
+
+        // Blinders step: no UI needed, just handle errors
+        Instruction::SendBlinders => match status {
+            AppSW::Ok => Action::Nothing,  // Silent success
+            _ => Action::Status { ok: false, ty: StatusType::Transaction, go_home: true, reset: true },
+        },
+
+        // Signing step:
+        Instruction::SignTx { .. } => {
+            if ctx.sign_completed {
+                let ok = (status == AppSW::Ok) && ctx.sign_succeeded;
+                Action::Status { ok, ty: StatusType::Transaction, go_home: true, reset: true }
+            } else if status != AppSW::Ok {
+                Action::Status { ok: false, ty: StatusType::Transaction, go_home: true, reset: true }
+            } else {
+                Action::Nothing
+            }
         }
-        (_, _) => (false, StatusType::Transaction),
+
+        // Address display:
+        Instruction::GetPubkey { display: true } if status == AppSW::Ok || status == AppSW::Deny => {
+            Action::Status { ok: status == AppSW::Ok, ty: StatusType::Address, go_home: true, reset: false }
+        }
+
+        _ => Action::Nothing,
     };
 
-    if show_status {
-        let success = *status == AppSW::Ok;
-        NbglReviewStatus::new()
-            .status_type(status_type)
-            .show(success);
-
-        // call home.show_and_return() to show home and setting screen
-        tx_ctx.home.show_and_return();
+    // Execute the chosen action
+    match action {
+        Action::Nothing => {}
+        Action::Home { reset } => {
+            home.show_and_return();
+            if reset { ctx.reset(); }
+        }
+        Action::Status { ok, ty, go_home, reset } => {
+            NbglReviewStatus::new().status_type(ty).show(ok);
+            if go_home { home.show_and_return(); }
+            if reset { ctx.reset(); }
+        }
     }
 }
 
+
 #[no_mangle]
 extern "C" fn sample_main() {
-    // Create the communication manager, and configure it to accept only APDU from the 0xe0 class.
-    // If any APDU with a wrong class value is received, comm will respond automatically with
-    // BadCla status word.
     let mut comm = Comm::new().set_expected_cla(0xe0);
-
     let mut tx_ctx = TxContext::new();
 
-    // Initialize reference to Comm instance for NBGL
-    // API calls.
     init_comm(&mut comm);
-    tx_ctx.home = ui_menu_main(&mut comm);
-    tx_ctx.home.show_and_return();
+
+    let mut home = ui_menu_main(&mut comm);
+    home.show_and_return();
 
     loop {
         let ins: Instruction = comm.next_command();
 
-        let _status = match handle_apdu(&mut comm, &ins, &mut tx_ctx) {
-            Ok(()) => {
-                comm.reply_ok();
-                AppSW::Ok
-            }
-            Err(sw) => {
-                comm.reply(sw);
-                sw
-            }
+        let status = match handle_apdu(&mut comm, &ins, &mut tx_ctx) {
+            Ok(()) => { comm.reply_ok(); AppSW::Ok }
+            Err(sw) => { comm.reply(sw); sw }
         };
-        show_status_and_home_if_needed(&ins, &mut tx_ctx, &_status);
+
+        show_status_and_home_if_needed(&mut comm, &mut home, &mut tx_ctx, &ins, status);
     }
 }
 
 fn handle_apdu(comm: &mut Comm, ins: &Instruction, ctx: &mut TxContext) -> Result<(), AppSW> {
+    if !matches!(ins, Instruction::SignTx { .. } | Instruction::LoadMemo { .. } | Instruction::SendBlinders) {
+        ctx.reset();
+    }
+
     match ins {
         Instruction::GetAppName => {
             comm.append(env!("CARGO_PKG_NAME").as_bytes());
@@ -187,5 +262,9 @@ fn handle_apdu(comm: &mut Comm, ins: &Instruction, ctx: &mut TxContext) -> Resul
         Instruction::GetVersion => handler_get_version(comm),
         Instruction::GetPubkey { display } => handler_get_public_key(comm, *display),
         Instruction::SignTx { chunk, more } => handler_sign_tx(comm, *chunk, *more, ctx),
+        #[cfg(debug_assertions)]
+        Instruction::DebugTestKeys => handlers::debug_keys::handler_debug_keys(comm),
+        Instruction::LoadMemo { chunk, more } => handlers::sign_tx::handler_load_memo(comm, *chunk, *more, ctx),
+        Instruction::SendBlinders => handlers::sign_tx::handler_send_blinders(comm, ctx),
     }
 }

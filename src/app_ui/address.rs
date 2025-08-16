@@ -1,44 +1,29 @@
-/*****************************************************************************
- *   Ledger App Boilerplate Rust.
- *   (c) 2023 Ledger SAS.
- *
- *  Licensed under the Apache License, Version 2.0 (the "License");
- *  you may not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS,
- *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
- *****************************************************************************/
-
 use crate::AppSW;
 use alloc::format;
+use core::str;
+use core::convert::TryInto;
 
 use include_gif::include_gif;
 use ledger_device_sdk::nbgl::{NbglAddressReview, NbglGlyph};
+use crate::alloc::string::ToString;
 
-// Display only the last 20 bytes of the address
-const DISPLAY_ADDR_BYTES_LEN: usize = 20;
+const DISPLAY_ADDR_BYTES_LEN: usize = 20; // hex fallback (last 20 bytes)
 
 pub fn ui_display_pk(addr: &[u8]) -> Result<bool, AppSW> {
-    let addr_hex = format!(
-        "0x{}",
-        hex::encode(&addr[addr.len() - DISPLAY_ADDR_BYTES_LEN..]).to_uppercase()
-    );
-
-    // Load glyph from 64x64 4bpp gif file with include_gif macro. Creates an NBGL compatible glyph.
+    // Load glyphs
     #[cfg(any(target_os = "stax", target_os = "flex"))]
-    const FERRIS: NbglGlyph = NbglGlyph::from_include(include_gif!("crab_64x64.gif", NBGL));
+    const FERRIS: NbglGlyph = NbglGlyph::from_include(include_gif!("xelis_64x64.gif", NBGL));
     #[cfg(any(target_os = "nanosplus", target_os = "nanox"))]
-    const FERRIS: NbglGlyph = NbglGlyph::from_include(include_gif!("crab_14x14.gif", NBGL));
+    const FERRIS: NbglGlyph = NbglGlyph::from_include(include_gif!("xelis_15x15.gif", NBGL));
 
-    // Display the address confirmation screen.
+    let fixed: [u8; 32] = addr
+        .try_into()
+        .map_err(|_| AppSW::AddrDisplayFail)?;
+    // Use shared formatting logic
+    let display_str = crate::crypto::address::format_address_safe(&fixed, true, false, true);
+
     Ok(NbglAddressReview::new()
         .glyph(&FERRIS)
-        .verify_str("Verify CRAB address")
-        .show(&addr_hex))
+        .verify_str("Verify XELIS address")
+        .show(&display_str))
 }

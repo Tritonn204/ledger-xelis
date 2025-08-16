@@ -1,6 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::AppSW;
+use ledger_device_sdk::ecc::CxError;
 
 /// BIP32 path stored as an array of [`u32`].
 #[derive(Default)]
@@ -38,5 +39,12 @@ impl TryFrom<&[u8]> for Bip32Path {
                 .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap()))
                 .collect(),
         ))
+    }
+}
+
+impl From<CxError> for AppSW {
+    fn from(_e: CxError) -> Self {
+        // pick the most appropriate app status
+        AppSW::KeyDeriveFail
     }
 }

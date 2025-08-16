@@ -1,11 +1,12 @@
 [package]
-name = "app-boilerplate-rust"
+name = "legder-xelis"
 version = "1.7.2"
-authors = ["Ledger"]
+authors = ["Tritonn"]
 edition = "2021"
 
 [dependencies]
 ledger_device_sdk = "1.23.0"
+ledger_secure_sdk_sys = "1.9.0"
 include_gif = "1.2.2"
 serde = { version="1.0.192", default-features = false, features = ["derive"] }
 serde-json-core = { git = "https://github.com/rust-embedded-community/serde-json-core" }
@@ -21,22 +22,22 @@ default = ["ledger_device_sdk/nano_nbgl"]
 debug = ["ledger_device_sdk/debug"]
 
 [package.metadata.ledger]
-curve = ["secp256k1"]
+curve = ["sr25519"]
 flags = "0"
 path = ["44'/1'"]
-name = "Rust Boilerplate"
+name = "XELIS"
 
 [package.metadata.ledger.nanox]
-icon = "crab_14x14.gif"
+icon = "xelis_15x15.gif"
 
 [package.metadata.ledger.nanosplus]
-icon = "crab_14x14.gif"
+icon = "xelis_15x15.gif"
 
 [package.metadata.ledger.stax]
-icon = "crab_32x32.gif"
+icon = "xelis_32x32.gif"
 
 [package.metadata.ledger.flex]
-icon = "crab_40x40.gif"
+icon = "xelis_40x40.gif"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("stax", "flex", "nanos", "nanox", "nanosplus"))'] }
