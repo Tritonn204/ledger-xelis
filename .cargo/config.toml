@@ -2,9 +2,9 @@
 runner = "speculos -a=1 --model=nanosp"
 
 [build]
-target = "flex"
+# target = "flex"
 # Uncomment the line below to generate a map file
-# rustflags = ["-Clink-args=-Map=app.map"]
+rustflags = ["-Clink-arg=-Map=app.map"]
 
 [unstable]
 build-std = ["core", "alloc"]

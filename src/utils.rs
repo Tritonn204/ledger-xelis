@@ -1,4 +1,6 @@
+use alloc::vec;
 use alloc::vec::Vec;
+use alloc::string::String;
 
 use crate::AppSW;
 use ledger_device_sdk::ecc::CxError;
@@ -47,4 +49,35 @@ impl From<CxError> for AppSW {
         // pick the most appropriate app status
         AppSW::KeyDeriveFail
     }
+}
+
+pub fn to_hex(data: &[u8], out: &mut [u8]) -> usize {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (i, &byte) in data.iter().enumerate() {
+        out[i * 2] = HEX[(byte >> 4) as usize];
+        out[i * 2 + 1] = HEX[(byte & 0x0f) as usize];
+    }
+    data.len() * 2
+}
+
+pub fn to_hex_string(data: &[u8]) -> String {
+    let mut buf = vec![0u8; data.len() * 2];
+    to_hex(data, &mut buf);
+    // Safe because we know it's valid ASCII
+    unsafe { String::from_utf8_unchecked(buf) }
+}
+
+pub fn to_hex_upper(data: &[u8], out: &mut [u8]) -> usize {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for (i, &byte) in data.iter().enumerate() {
+        out[i * 2] = HEX[(byte >> 4) as usize];
+        out[i * 2 + 1] = HEX[(byte & 0x0f) as usize];
+    }
+    data.len() * 2
+}
+
+pub fn to_hex_string_upper(data: &[u8]) -> String {
+    let mut buf = vec![0u8; data.len() * 2];
+    to_hex_upper(data, &mut buf);
+    unsafe { String::from_utf8_unchecked(buf) }
 }

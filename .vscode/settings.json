@@ -1,6 +1,6 @@
 {
   "ledgerDevTools.appSettings": {
-    "selectedUseCase": "debug",
+    "selectedUseCase": "release",
     "selectedDevice": "Nano S Plus",
     "testsList": [
       "test_app_mainmenu",

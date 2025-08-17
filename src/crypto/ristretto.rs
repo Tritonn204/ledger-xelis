@@ -34,6 +34,21 @@ pub const EDWARDS_D: Fe25519 = [
     0x00, 0x70, 0x0a, 0x4d, 0x41, 0x41, 0xd8, 0xab, 0x75, 0xeb, 0x4d, 0xca, 0x13, 0x59, 0x78, 0xa3,
 ];
 
+pub const FE25519_ONE: Fe25519 = {
+    let mut a = [0u8; 32];
+    a[31] = 1;
+    a
+};
+
+pub const IDENTITY_POINT: RistrettoPoint = {
+    RistrettoPoint {
+        x: [0; 32],
+        y: FE25519_ONE,
+        z: FE25519_ONE,
+        t: [0; 32],
+    }
+};
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CompressedRistretto(pub [u8; 32]); // Stored in BE internally
@@ -73,60 +88,42 @@ pub struct RistrettoPoint {
     pub t: Fe25519, // BE internally
 }
 
+#[inline(always)]
 pub fn is_zero(bytes: &[u8]) -> bool {
     bytes.iter().all(|&b| b == 0)
 }
 
-// Helper functions - all work with BE internally
-pub fn fe25519_mul(h: &mut Fe25519, f: &Fe25519, g: &Fe25519) -> Result<(), CxError> {
-    unsafe {
-        let result = cx_math_multm_no_throw(
-            h.as_mut_ptr(),
-            f.as_ptr(),
-            g.as_ptr(),
-            ED25519_FIELD_SIZE.as_ptr(),
-            ED25519_SCALAR_BYTES,
-        );
-        if result != 0 {
-            Err(CxError::InvalidParameter)
-        } else {
-            Ok(())
-        }
+#[inline(always)]
+unsafe fn field_op(
+    op: unsafe extern "C" fn(*mut u8, *const u8, *const u8, *const u8, usize) -> u32,
+    out: &mut Fe25519,
+    a: &Fe25519,
+    b: &Fe25519,
+) -> Result<(), CxError> {
+    if op(
+        out.as_mut_ptr(),
+        a.as_ptr(),
+        b.as_ptr(),
+        ED25519_FIELD_SIZE.as_ptr(),
+        32,
+    ) != 0
+    {
+        Err(CxError::InvalidParameter)
+    } else {
+        Ok(())
     }
+}
+
+pub fn fe25519_mul(h: &mut Fe25519, f: &Fe25519, g: &Fe25519) -> Result<(), CxError> {
+    unsafe { field_op(cx_math_multm_no_throw, h, f, g) }
 }
 
 pub fn fe25519_add(h: &mut Fe25519, f: &Fe25519, g: &Fe25519) -> Result<(), CxError> {
-    unsafe {
-        let result = cx_math_addm_no_throw(
-            h.as_mut_ptr(),
-            f.as_ptr(),
-            g.as_ptr(),
-            ED25519_FIELD_SIZE.as_ptr(),
-            ED25519_SCALAR_BYTES,
-        );
-        if result != 0 {
-            Err(CxError::InvalidParameter)
-        } else {
-            Ok(())
-        }
-    }
+    unsafe { field_op(cx_math_addm_no_throw, h, f, g) }
 }
 
 pub fn fe25519_sub(h: &mut Fe25519, f: &Fe25519, g: &Fe25519) -> Result<(), CxError> {
-    unsafe {
-        let result = cx_math_subm_no_throw(
-            h.as_mut_ptr(),
-            f.as_ptr(),
-            g.as_ptr(),
-            ED25519_FIELD_SIZE.as_ptr(),
-            ED25519_SCALAR_BYTES,
-        );
-        if result != 0 {
-            Err(CxError::InvalidParameter)
-        } else {
-            Ok(())
-        }
-    }
+    unsafe { field_op(cx_math_subm_no_throw, h, f, g) }
 }
 
 pub fn fe25519_pow22523(out: &mut Fe25519, z: &Fe25519) -> Result<(), CxError> {
@@ -147,16 +144,18 @@ pub fn fe25519_pow22523(out: &mut Fe25519, z: &Fe25519) -> Result<(), CxError> {
     }
 }
 
+#[inline(always)]
 pub fn fe25519_sq(h: &mut Fe25519, f: &Fe25519) -> Result<(), CxError> {
     fe25519_mul(h, f, f)
 }
 
+#[inline(always)]
 fn fe25519_is_zero(f: &Fe25519) -> bool {
     is_zero(f)
 }
 
+#[inline(always)]
 pub fn fe25519_is_negative(f: &Fe25519) -> bool {
-    // In BE, the least significant bit is at index 31
     f[31] & 1 == 1
 }
 
@@ -178,22 +177,20 @@ pub fn fe25519_neg(h: &mut Fe25519, f: &Fe25519) -> Result<(), CxError> {
 }
 
 pub fn fe25519_conditional_negate(f: &mut Fe25519, negate: bool) -> Result<(), CxError> {
-    if negate {
-        let mut neg = [0u8; 32];
-        fe25519_neg(&mut neg, f)?;
-        f.copy_from_slice(&neg);
+    let mask = (negate as u8).wrapping_neg();
+    let mut neg = [0u8; 32];
+    fe25519_neg(&mut neg, f)?;
+
+    for i in 0..32 {
+        f[i] = (f[i] & !mask) | (neg[i] & mask);
     }
     Ok(())
 }
 
-pub fn fe25519_one() -> Fe25519 {
-    let mut one = [0u8; 32];
-    one[31] = 1; // In BE, the least significant byte is at index 31
-    one
-}
-
 // Ristretto decompression
+#[cfg(debug_assertions)]
 impl CompressedRistretto {
+    #[inline(never)]
     pub fn decompress(&self) -> Result<RistrettoPoint, AppSW> {
         // self.0 is already in BE
         let mut s = self.0;
@@ -207,7 +204,7 @@ impl CompressedRistretto {
         s[0] &= 0x7f;
 
         // Step 2: Compute the decompressed point
-        let one = fe25519_one();
+        let one = FE25519_ONE;
         let mut ss = [0u8; 32];
         let mut u1 = [0u8; 32];
         let mut u2 = [0u8; 32];
@@ -289,112 +286,107 @@ impl CompressedRistretto {
 // Ristretto compression
 impl RistrettoPoint {
     pub fn compress(&self) -> Result<CompressedRistretto, AppSW> {
-        let mut u1 = [0u8; 32];
-        let mut u2 = [0u8; 32];
-        let mut u1_u2u2 = [0u8; 32];
-        let mut inv_sqrt = [0u8; 32];
-        let mut den1 = [0u8; 32];
-        let mut den2 = [0u8; 32];
-        let mut z_inv = [0u8; 32];
-        let mut ix = [0u8; 32];
-        let mut iy = [0u8; 32];
-        let mut eden = [0u8; 32];
-        let mut t_z_inv = [0u8; 32];
-        let mut x_ = [0u8; 32];
-        let mut y_ = [0u8; 32];
-        let mut den_inv = [0u8; 32];
-        let mut x_z_inv = [0u8; 32];
-        let mut s_ = [0u8; 32];
-        let mut s = [0u8; 32];
-        let mut zmy = [0u8; 32];
-        let mut temp = [0u8; 32];
+        (|| -> Result<CompressedRistretto, CxError> {
+            let mut t0 = [0u8; 32]; // Main workhorse
+            let mut t1 = [0u8; 32]; // Secondary temp
+            let mut t2 = [0u8; 32]; // Holds values needed later
+            let mut t3 = [0u8; 32]; // Holds values needed later
+            let mut t4 = [0u8; 32]; // For parallel computations
+            let mut t5 = [0u8; 32]; // For parallel computations
 
-        // u1 = Z + Y
-        fe25519_add(&mut u1, &self.z, &self.y).map_err(|_| AppSW::TxSignFail)?;
+            // t0 = Z + Y (u1)
+            fe25519_add(&mut t0, &self.z, &self.y)?;
 
-        // zmy = Z - Y
-        fe25519_sub(&mut zmy, &self.z, &self.y).map_err(|_| AppSW::TxSignFail)?;
+            // t1 = Z - Y (zmy)
+            fe25519_sub(&mut t1, &self.z, &self.y)?;
 
-        // u1 = (Z+Y) * (Z-Y)
-        fe25519_mul(&mut temp, &u1, &zmy).map_err(|_| AppSW::TxSignFail)?;
-        u1.copy_from_slice(&temp);
+            // t0 = (Z+Y) * (Z-Y) (u1 final)
+            fe25519_mul(&mut t2, &t0, &t1)?;
+            t0.copy_from_slice(&t2);
+            // t0=u1, t1=free, t2=free
 
-        // u2 = X * Y
-        fe25519_mul(&mut u2, &self.x, &self.y).map_err(|_| AppSW::TxSignFail)?;
+            // t1 = X * Y (u2)
+            fe25519_mul(&mut t1, &self.x, &self.y)?;
 
-        // u1_u2u2 = u1 * u2^2
-        let mut u2_squared = [0u8; 32];
-        fe25519_sq(&mut u2_squared, &u2).map_err(|_| AppSW::TxSignFail)?;
-        fe25519_mul(&mut u1_u2u2, &u1, &u2_squared).map_err(|_| AppSW::TxSignFail)?;
+            // t2 = u2^2 (u2_squared)
+            fe25519_sq(&mut t2, &t1)?;
 
-        // Compute inverse square root of u1_u2u2
-        let one = fe25519_one();
-        let (ok, _) = ristretto255_sqrt_ratio_m1(&mut inv_sqrt, &one, &u1_u2u2)
-            .map_err(|_| AppSW::TxSignFail)?;
+            // t3 = u1 * u2^2 (u1_u2u2)
+            fe25519_mul(&mut t3, &t0, &t2)?;
+            // t0=u1, t1=u2, t2=free, t3=u1_u2u2
 
-        if !ok {
-            return Err(AppSW::TxSignFail);
-        }
+            // t2 = inverse sqrt of u1_u2u2 (inv_sqrt)
+            let one = FE25519_ONE;
+            ristretto255_sqrt_ratio_m1(&mut t2, &one, &t3)?;
 
-        // den1 = inv_sqrt * u1
-        fe25519_mul(&mut den1, &inv_sqrt, &u1).map_err(|_| AppSW::TxSignFail)?;
+            // t0=u1, t1=u2, t2=inv_sqrt, t3=free
 
-        // den2 = inv_sqrt * u2
-        fe25519_mul(&mut den2, &inv_sqrt, &u2).map_err(|_| AppSW::TxSignFail)?;
+            // t3 = inv_sqrt * u1 (den1)
+            fe25519_mul(&mut t3, &t2, &t0)?;
+            // t0=free, t1=u2, t2=inv_sqrt, t3=den1
 
-        // z_inv = den1 * den2 * T
-        fe25519_mul(&mut temp, &den1, &den2).map_err(|_| AppSW::TxSignFail)?;
-        fe25519_mul(&mut z_inv, &temp, &self.t).map_err(|_| AppSW::TxSignFail)?;
+            // t0 = inv_sqrt * u2 (den2)  
+            fe25519_mul(&mut t0, &t2, &t1)?;
+            // t0=den2, t1=free, t2=free, t3=den1
 
-        // ix = X * sqrt(-1)
-        fe25519_mul(&mut ix, &self.x, &FE25519_SQRTM1).map_err(|_| AppSW::TxSignFail)?;
+            // t1 = den1 * den2
+            fe25519_mul(&mut t1, &t3, &t0)?;
+            
+            // t2 = den1 * den2 * T (z_inv)
+            fe25519_mul(&mut t2, &t1, &self.t)?;
+            // t0=den2, t1=free, t2=z_inv, t3=den1
 
-        // iy = Y * sqrt(-1)
-        fe25519_mul(&mut iy, &self.y, &FE25519_SQRTM1).map_err(|_| AppSW::TxSignFail)?;
+            // t1 = T * z_inv (t_z_inv) - just for the check
+            fe25519_mul(&mut t1, &self.t, &t2)?;
+            let rotate = fe25519_is_negative(&t1);
+            // t0=den2, t1=free, t2=z_inv, t3=den1
 
-        // eden = den1 * invsqrt(a-d)
-        fe25519_mul(&mut eden, &den1, &ED25519_INVSQRTAMD).map_err(|_| AppSW::TxSignFail)?;
+            // Now compute the conditional values
+            if rotate {
+                // t4 = Y * sqrt(-1) (iy)
+                fe25519_mul(&mut t4, &self.y, &FE25519_SQRTM1)?;
+                
+                // t5 = X * sqrt(-1) (ix)
+                fe25519_mul(&mut t5, &self.x, &FE25519_SQRTM1)?;
+                
+                // t1 = den1 * invsqrt(a-d) (eden -> den_inv)
+                fe25519_mul(&mut t1, &t3, &ED25519_INVSQRTAMD)?;
+                
+                // x_ = iy (t4), y_ = ix (t5), den_inv = eden (t1)
+            } else {
+                // x_ = X, y_ = Y, den_inv = den2
+                t4.copy_from_slice(&self.x);
+                t5.copy_from_slice(&self.y);
+                t1.copy_from_slice(&t0);
+            }
+            // t0=free, t1=den_inv, t2=z_inv, t3=free, t4=x_, t5=y_
 
-        // t_z_inv = T * z_inv
-        fe25519_mul(&mut t_z_inv, &self.t, &z_inv).map_err(|_| AppSW::TxSignFail)?;
+            // t0 = x_ * z_inv (x_z_inv)
+            fe25519_mul(&mut t0, &t4, &t2)?;
 
-        // Rotate if t_z_inv is negative
-        let rotate = fe25519_is_negative(&t_z_inv);
+            // Conditionally negate y_
+            if fe25519_is_negative(&t0) {
+                fe25519_neg(&mut t3, &t5)?;
+                t5.copy_from_slice(&t3);
+            }
+            // t0=free, t1=den_inv, t2=free, t3=free, t4=free, t5=y_
 
-        // Copy initial values
-        x_.copy_from_slice(&self.x);
-        y_.copy_from_slice(&self.y);
-        den_inv.copy_from_slice(&den2);
+            // t0 = Z - y_
+            fe25519_sub(&mut t0, &self.z, &t5)?;
 
-        // Conditional rotate
-        if rotate {
-            x_.copy_from_slice(&iy);
-            y_.copy_from_slice(&ix);
-            den_inv.copy_from_slice(&eden);
-        }
+            // t2 = (Z - y_) * den_inv (s_)
+            fe25519_mul(&mut t2, &t0, &t1)?;
 
-        // x_z_inv = x_ * z_inv
-        fe25519_mul(&mut x_z_inv, &x_, &z_inv).map_err(|_| AppSW::TxSignFail)?;
+            // Make s absolute value
+            let mut s = [0u8; 32];
+            if fe25519_is_negative(&t2) {
+                fe25519_neg(&mut s, &t2)?;
+            } else {
+                s.copy_from_slice(&t2);
+            }
 
-        // Conditionally negate y_
-        if fe25519_is_negative(&x_z_inv) {
-            fe25519_neg(&mut temp, &y_).map_err(|_| AppSW::TxSignFail)?;
-            y_.copy_from_slice(&temp);
-        }
-
-        // s_ = (Z - y_) * den_inv
-        fe25519_sub(&mut temp, &self.z, &y_).map_err(|_| AppSW::TxSignFail)?;
-        fe25519_mul(&mut s_, &temp, &den_inv).map_err(|_| AppSW::TxSignFail)?;
-
-        // Make s absolute value
-        if fe25519_is_negative(&s_) {
-            fe25519_neg(&mut s, &s_).map_err(|_| AppSW::TxSignFail)?;
-        } else {
-            s.copy_from_slice(&s_);
-        }
-
-        // Return as BE internally
-        Ok(CompressedRistretto(s))
+            Ok(CompressedRistretto(s))
+        })().map_err(|_| AppSW::KeyDeriveFail)
     }
 }
 
@@ -464,159 +456,92 @@ pub fn scalar_mult_ristretto(
     scalar: &[u8; 32],
     point: &RistrettoPoint,
 ) -> Result<RistrettoPoint, AppSW> {
-    // scalar is already in BE format
-    let mut result = RistrettoPoint {
-        x: [0; 32],
-        y: fe25519_one(),
-        z: fe25519_one(),
-        t: [0; 32],
-    }; // Identity
-
+    let mut result = IDENTITY_POINT;
     let mut temp = *point;
-
-    // Process scalar from LSB to MSB
-    // In BE format, we need to process from the last byte
+    
     for i in 0..256 {
-        let byte_index = 31 - (i / 8); // Start from last byte in BE
-        let bit_index = i % 8;
-        let bit = (scalar[byte_index] >> bit_index) & 1;
-
-        if bit == 1 {
+        let byte_idx = 31 - (i / 8);
+        let bit_idx = i % 8;
+        if (scalar[byte_idx] >> bit_idx) & 1 != 0 {
             result = edwards_add(&result, &temp)?;
         }
-
-        temp = edwards_double(&temp)?;
+        temp = edwards_add(&temp, &temp)?;
     }
-
     Ok(result)
 }
 
 // Edwards curve point addition
 pub fn edwards_add(p: &RistrettoPoint, q: &RistrettoPoint) -> Result<RistrettoPoint, AppSW> {
-    let mut a = [0u8; 32];
-    let mut b = [0u8; 32];
-    let mut c = [0u8; 32];
-    let mut d = [0u8; 32];
-    let mut e = [0u8; 32];
-    let mut f = [0u8; 32];
-    let mut g = [0u8; 32];
-    let mut h = [0u8; 32];
-    let mut temp1 = [0u8; 32];
-    let mut temp2 = [0u8; 32];
+    (|| -> Result<RistrettoPoint, CxError> {
+        let mut t0 = [0u8; 32];
+        let mut t1 = [0u8; 32];
+        let mut t2 = [0u8; 32];
+        let mut t3 = [0u8; 32];
+        let mut t4 = [0u8; 32];
+        let mut t5 = [0u8; 32];
 
-    // A = (Y1-X1)*(Y2-X2)
-    fe25519_sub(&mut temp1, &p.y, &p.x).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_sub(&mut temp2, &q.y, &q.x).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_mul(&mut a, &temp1, &temp2).map_err(|_| AppSW::KeyDeriveFail)?;
+        // t0 = (Y1-X1)
+        fe25519_sub(&mut t0, &p.y, &p.x)?;
+        // t1 = (Y2-X2)
+        fe25519_sub(&mut t1, &q.y, &q.x)?;
+        // t2 = A = (Y1-X1)*(Y2-X2)
+        fe25519_mul(&mut t2, &t0, &t1)?;
+        
+        // t0 = (Y1+X1)
+        fe25519_add(&mut t0, &p.y, &p.x)?;
+        // t1 = (Y2+X2)
+        fe25519_add(&mut t1, &q.y, &q.x)?;
+        // t3 = B = (Y1+X1)*(Y2+X2)
+        fe25519_mul(&mut t3, &t0, &t1)?;
 
-    // B = (Y1+X1)*(Y2+X2)
-    fe25519_add(&mut temp1, &p.y, &p.x).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_add(&mut temp2, &q.y, &q.x).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_mul(&mut b, &temp1, &temp2).map_err(|_| AppSW::KeyDeriveFail)?;
+        // t0 = T1*T2
+        fe25519_mul(&mut t0, &p.t, &q.t)?;
+        // t1 = 2*d
+        fe25519_add(&mut t1, &EDWARDS_D, &EDWARDS_D)?;
+        // t4 = C = T1*2*d*T2
+        fe25519_mul(&mut t4, &t0, &t1)?;
 
-    // C = T1*2*d*T2
-    fe25519_mul(&mut temp1, &p.t, &q.t).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_add(&mut temp2, &EDWARDS_D, &EDWARDS_D).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_mul(&mut c, &temp1, &temp2).map_err(|_| AppSW::KeyDeriveFail)?;
+        // t0 = Z1*Z2
+        fe25519_mul(&mut t0, &p.z, &q.z)?;
+        // t5 = D = 2*Z1*Z2
+        fe25519_add(&mut t5, &t0, &t0)?;
 
-    // D = Z1*2*Z2
-    fe25519_mul(&mut temp1, &p.z, &q.z).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_add(&mut d, &temp1, &temp1).map_err(|_| AppSW::KeyDeriveFail)?;
+        // t0 = E = B - A
+        fe25519_sub(&mut t0, &t3, &t2)?;
+        
+        // t1 = H = B + A  
+        fe25519_add(&mut t1, &t3, &t2)?;
+        
+        // Now A,B are consumed, can reuse t2,t3
+        
+        // t2 = F = D - C
+        fe25519_sub(&mut t2, &t5, &t4)?;
+        
+        // t3 = G = D + C
+        fe25519_add(&mut t3, &t5, &t4)?;
 
-    // E = B-A
-    fe25519_sub(&mut e, &b, &a).map_err(|_| AppSW::KeyDeriveFail)?;
+        // Final computations
+        let mut x3 = [0u8; 32];
+        let mut y3 = [0u8; 32];
+        let mut t3_out = [0u8; 32];
+        let mut z3 = [0u8; 32];
 
-    // F = D-C
-    fe25519_sub(&mut f, &d, &c).map_err(|_| AppSW::KeyDeriveFail)?;
+        // X3 = E*F
+        fe25519_mul(&mut x3, &t0, &t2)?;
+        // Y3 = G*H  
+        fe25519_mul(&mut y3, &t3, &t1)?;
+        // T3 = E*H
+        fe25519_mul(&mut t3_out, &t0, &t1)?;
+        // Z3 = F*G
+        fe25519_mul(&mut z3, &t2, &t3)?;
 
-    // G = D+C
-    fe25519_add(&mut g, &d, &c).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // H = B+A
-    fe25519_add(&mut h, &b, &a).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // X3 = E*F
-    let mut x3 = [0u8; 32];
-    fe25519_mul(&mut x3, &e, &f).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // Y3 = G*H
-    let mut y3 = [0u8; 32];
-    fe25519_mul(&mut y3, &g, &h).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // T3 = E*H
-    let mut t3 = [0u8; 32];
-    fe25519_mul(&mut t3, &e, &h).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // Z3 = F*G
-    let mut z3 = [0u8; 32];
-    fe25519_mul(&mut z3, &f, &g).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    Ok(RistrettoPoint {
-        x: x3,
-        y: y3,
-        z: z3,
-        t: t3,
-    })
-}
-
-// Edwards curve point doubling
-pub fn edwards_double(p: &RistrettoPoint) -> Result<RistrettoPoint, AppSW> {
-    let mut a = [0u8; 32];
-    let mut b = [0u8; 32];
-    let mut c = [0u8; 32];
-    let mut e = [0u8; 32];
-    let mut g = [0u8; 32];
-    let mut f = [0u8; 32];
-    let mut h = [0u8; 32];
-    let mut temp1 = [0u8; 32];
-    let mut temp2 = [0u8; 32];
-
-    // A = X1^2
-    fe25519_sq(&mut a, &p.x).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // B = Y1^2
-    fe25519_sq(&mut b, &p.y).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // C = 2*Z1^2
-    fe25519_sq(&mut temp1, &p.z).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_add(&mut c, &temp1, &temp1).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // H = A+B
-    fe25519_add(&mut h, &a, &b).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // E = H-(X1+Y1)^2
-    fe25519_add(&mut temp1, &p.x, &p.y).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_sq(&mut temp2, &temp1).map_err(|_| AppSW::KeyDeriveFail)?;
-    fe25519_sub(&mut e, &h, &temp2).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // G = A-B
-    fe25519_sub(&mut g, &a, &b).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // F = C+G
-    fe25519_add(&mut f, &c, &g).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // X3 = E*F
-    let mut x3 = [0u8; 32];
-    fe25519_mul(&mut x3, &e, &f).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // Y3 = G*H
-    let mut y3 = [0u8; 32];
-    fe25519_mul(&mut y3, &g, &h).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // T3 = E*H
-    let mut t3 = [0u8; 32];
-    fe25519_mul(&mut t3, &e, &h).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // Z3 = F*G
-    let mut z3 = [0u8; 32];
-    fe25519_mul(&mut z3, &f, &g).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    Ok(RistrettoPoint {
-        x: x3,
-        y: y3,
-        z: z3,
-        t: t3,
-    })
+        Ok(RistrettoPoint {
+            x: x3,
+            y: y3,
+            z: z3,
+            t: t3_out,
+        })
+    })().map_err(|_| AppSW::KeyDeriveFail)
 }
 
 pub fn xelis_derive_public_key(private_key: &[u8; 32]) -> Result<CompressedRistretto, AppSW> {

@@ -1,6 +1,7 @@
 use crate::crypto::public_key::XelisPublicKey;
 use crate::crypto::ristretto::CompressedRistretto;
 use crate::AppSW;
+use crate::utils::{to_hex_string, to_hex_string_upper};
 
 const PREFIX_ADDRESS: &str = "xel";
 const TESTNET_PREFIX_ADDRESS: &str = "xet";
@@ -190,8 +191,8 @@ pub fn format_address_safe(pk: &[u8; 32], mainnet: bool, short: bool, is_le: boo
     if !crate::crypto::ristretto::is_valid_compressed_ristretto(pk, is_le) {
         return format!(
             "[INVALID]0x{}...{}",
-            hex::encode(&pk[..6]).to_uppercase(),
-            hex::encode(&pk[26..]).to_uppercase()
+            to_hex_string(&pk[..6]),
+            to_hex_string(&pk[26..])
         );
     }
 
@@ -204,8 +205,8 @@ pub fn format_address_safe(pk: &[u8; 32], mainnet: bool, short: bool, is_le: boo
     format_address(&tmp, mainnet, short).unwrap_or_else(|_| {
         format!(
             "[ERROR]0x{}...{}",
-            hex::encode(&tmp[..6]).to_uppercase(),
-            hex::encode(&tmp[26..]).to_uppercase()
+            to_hex_string(&tmp[..6]),
+            to_hex_string(&tmp[26..])
         )
     })
 }

@@ -7,6 +7,8 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::utils::{to_hex_string, to_hex_string_upper};
+
 pub fn ui_display_tx(tx: &ParsedTransaction) -> Result<bool, AppSW> {
     // Build all owned (name, value) pairs first, then borrow from them.
     let mut owned: Vec<(String, String)> = Vec::new();
@@ -94,8 +96,8 @@ fn format_asset(asset: &[u8; 32]) -> String {
     } else {
         format!(
             "{}...{}",
-            hex::encode(&asset[..4]).to_uppercase(),
-            hex::encode(&asset[28..]).to_uppercase()
+            to_hex_string(&asset[..4]),
+            to_hex_string(&asset[28..])
         )
     }
 }
@@ -110,7 +112,7 @@ fn format_amount(amount: u64) -> String {
 fn format_hash(hash: &[u8; 32]) -> String {
     format!(
         "{}...{}",
-        hex::encode(&hash[..6]).to_uppercase(),
-        hex::encode(&hash[26..]).to_uppercase()
+        to_hex_string_upper(&hash[..6]),
+        to_hex_string_upper(&hash[26..])
     )
 }

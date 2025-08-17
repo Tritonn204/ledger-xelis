@@ -4,7 +4,7 @@ use crate::{cx::*, AppSW};
 use alloc::format;
 use alloc::string::String;
 use ledger_device_sdk::ecc::CxError;
-use ledger_secure_sdk_sys::CX_OK;
+use ledger_device_sdk::random;
 
 /// Check if a scalar is zero
 pub fn is_zero(scalar: &[u8; 32]) -> bool {
@@ -91,15 +91,7 @@ pub fn scalar_multiply(result: &mut [u8; 32], a: &[u8; 32], b: &[u8; 32]) -> Res
 /// Generate a random scalar using the secure element's TRNG
 /// Output is in big-endian format and reduced modulo L
 pub fn scalar_random(result: &mut [u8; 32]) -> Result<(), AppSW> {
-    unsafe {
-        // Generate 32 random bytes
-        let res = cx_rng_no_throw(result.as_mut_ptr(), 32);
-        if res != CX_OK {
-            return Err(AppSW::CryptoError);
-        }
-    }
-
-    // Ensure big-endian and reduce modulo L
+    random::rand_bytes(result);
     scalar_reduce(result).map_err(|_| AppSW::CryptoError)?;
 
     Ok(())
