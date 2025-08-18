@@ -56,6 +56,32 @@ impl CommitmentVerifier {
         self.commitments_verified = 0;
     }
 
+    /// Initialize blinders for a new set (clears existing)
+    pub fn init_blinders(&mut self) {
+        self.blinders.clear();
+    }
+
+    /// Add a single blinder (for chunked receiving)
+    pub fn add_blinder(&mut self, blinder: [u8; 32]) {
+        self.blinders.push(blinder);
+    }
+
+    /// Add multiple blinders at once
+    pub fn add_blinders(&mut self, blinders: &[[u8; 32]]) {
+        self.blinders.extend_from_slice(blinders);
+    }
+
+    /// Get the current count of blinders
+    pub fn blinder_count(&self) -> usize {
+        self.blinders.len()
+    }
+
+    /// Get a reference to the blinders (for validation)
+    pub fn blinders(&self) -> &[[u8; 32]] {
+        &self.blinders
+    }
+
+    /// Legacy method - kept for compatibility but prefer init_blinders + add_blinder
     pub fn set_blinders(&mut self, blinders: Vec<[u8; 32]>) {
         self.blinders = blinders;
     }

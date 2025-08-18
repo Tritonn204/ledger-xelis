@@ -1,5 +1,7 @@
-use crate::{xlb::MemoPreview, AppSW};
+use crate::{xlb::*, AppSW};
 use alloc::vec::Vec;
+
+const EXPECTED_BURN_SIZE: usize = 75;
 
 pub struct TxStreamParser {
     pub bytes_seen: usize,
@@ -9,6 +11,18 @@ pub struct TxStreamParser {
     pub transfer_count: u8,
     pub transfers_parsed: u8,
     pub pending_tail_skip: usize,
+    pub partial_buffer: [u8; 256],
+    pub partial_len: usize,
+    pub partial_type: PartialType,
+    pub burn_parsed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PartialType {
+    None,
+    ExtraLength,
+    ExtraData(usize),
+    Commitment,
 }
 
 impl TxStreamParser {
@@ -21,6 +35,10 @@ impl TxStreamParser {
             transfer_count: 0,
             transfers_parsed: 0,
             pending_tail_skip: 0,
+            partial_buffer: [0u8; 256],
+            partial_len: 0,
+            partial_type: PartialType::None,
+            burn_parsed: false,
         }
     }
 
@@ -32,6 +50,10 @@ impl TxStreamParser {
         self.transfer_count = 0;
         self.transfers_parsed = 0;
         self.pending_tail_skip = 0;
+        self.partial_buffer = [0u8; 256];
+        self.partial_len = 0;
+        self.partial_type = PartialType::None;
+        self.burn_parsed = false;
     }
 
     /// Parse transaction header from stream
@@ -70,19 +92,77 @@ impl TxStreamParser {
             }
 
             self.in_transfers = tx_type == 1;
+
+            match tx_type {
+                TX_TRANSFER => {
+                    self.in_transfers = true;
+                }
+                TX_BURN => {
+                    self.bytes_seen = 35;
+                    return Ok(offset);
+                }
+                _ => {
+                    self.bytes_seen = 35;
+                    return Ok(offset);
+                }
+            }
         }
 
-        // Transfer count
         if self.bytes_seen == 34 && self.in_transfers && offset < data.len() {
             self.transfer_count = data[offset];
             offset += 1;
             self.bytes_seen += 1;
 
-            if self.transfer_count != memo.outs.len() as u8 {
-                return Err(AppSW::TxParsingFail);
+            unsafe {
+                if self.transfer_count != memo_ws_mut().outs.len() as u8 {
+                    return Err(AppSW::TxParsingFail);
+                }
             }
-        } else if self.bytes_seen == 34 {
-            self.bytes_seen = 35;
+        }
+
+        Ok(offset)
+    }
+
+    pub fn parse_burn(&mut self, data: &[u8], memo: &MemoPreview) -> Result<usize, AppSW> {
+        let mut offset = 0;
+
+        // Burn payload is 40 bytes: asset(32) + amount(8)
+        const BURN_PAYLOAD_SIZE: usize = 40;
+
+        // Continue accumulating burn payload
+        while self.partial_len < BURN_PAYLOAD_SIZE && offset < data.len() {
+            self.partial_buffer[self.partial_len] = data[offset];
+            self.partial_len += 1;
+            offset += 1;
+        }
+
+        unsafe {
+            // Check if we have complete burn payload
+            if self.partial_len == BURN_PAYLOAD_SIZE {
+                // Validate burn structure
+                if memo_ws_mut().outs.len() != 1 {
+                    return Err(AppSW::TxParsingFail);
+                }
+
+                // Extract and validate amount (bytes 32-39 of payload)
+                let amount_bytes: [u8; 8] = self.partial_buffer[32..40]
+                    .try_into()
+                    .map_err(|_| AppSW::TxParsingFail)?;
+                let amount = u64::from_le_bytes(amount_bytes);
+
+                // Verify amount matches memo
+                if amount != memo_ws_mut().outs[0].amount {
+                    return Err(AppSW::TxParsingFail);
+                }
+
+                // Mark burn as parsed
+                self.burn_parsed = true;
+                self.partial_len = 0;
+            }
+        }
+
+        if self.bytes_seen + offset > EXPECTED_BURN_SIZE {
+            return Err(AppSW::TxParsingFail);
         }
 
         Ok(offset)
@@ -94,54 +174,175 @@ impl TxStreamParser {
         data: &[u8],
     ) -> Result<(Option<[u8; 32]>, usize), AppSW> {
         let mut consumed = 0;
+        let mut off = 0;
 
-        // Handle pending tail skip
+        // Handle pending tail skip first
         if self.pending_tail_skip > 0 {
             let take = core::cmp::min(self.pending_tail_skip, data.len());
             self.pending_tail_skip -= take;
             return Ok((None, take));
         }
 
-        // Need at least asset(32) + dest(32) + has_extra(1)
-        if data.len() < 65 {
-            return Ok((None, 0));
-        }
+        // Main processing loop
+        loop {
+            match self.partial_type {
+                PartialType::None => {
+                    // Starting fresh transfer - need asset(32) + dest(32) + has_extra(1) = 65 bytes
+                    if self.partial_len < 65 {
+                        let needed = 65 - self.partial_len;
+                        let available = core::cmp::min(needed, data.len() - off);
 
-        let mut off = 64; // Skip asset + destination
+                        self.partial_buffer[self.partial_len..self.partial_len + available]
+                            .copy_from_slice(&data[off..off + available]);
 
-        // Handle extra data
-        let has_extra = data[off];
-        off += 1;
+                        off += available;
+                        consumed += available;
+                        self.partial_len += available;
 
-        if has_extra == 1 {
-            let (len, used) = read_varint(&data[off..])?;
-            off += used;
-            if data.len() < off + len {
+                        if self.partial_len < 65 {
+                            // Still need more data for header
+                            return Ok((None, consumed));
+                        }
+                    }
+
+                    // Now we have asset(32) + dest(32) + has_extra(1)
+                    let has_extra = self.partial_buffer[64];
+                    self.partial_len = 0; // Reset for next component
+
+                    if has_extra == 1 {
+                        // Move to reading extra length
+                        self.partial_type = PartialType::ExtraLength;
+                        // Continue in next iteration
+                    } else {
+                        // No extra data, move directly to commitment
+                        self.partial_type = PartialType::Commitment;
+                        // Continue in next iteration
+                    }
+                }
+
+                PartialType::ExtraLength => {
+                    // Continue reading varint for extra data length
+                    let start_off = off;
+
+                    for i in off..data.len() {
+                        if self.partial_len >= 9 {
+                            return Err(AppSW::TxParsingFail);
+                        }
+
+                        self.partial_buffer[self.partial_len] = data[i];
+                        self.partial_len += 1;
+                        off += 1;
+                        consumed += 1;
+
+                        if data[i] & 0x80 == 0 {
+                            // Varint complete, parse it
+                            let (extra_len, _) =
+                                read_varint(&self.partial_buffer[..self.partial_len])?;
+                            self.partial_len = 0; // Reset for next component
+
+                            if extra_len > 0 {
+                                self.partial_type = PartialType::ExtraData(extra_len);
+                            } else {
+                                // Zero-length extra, move to commitment
+                                self.partial_type = PartialType::Commitment;
+                            }
+                            break;
+                        }
+                    }
+
+                    if off == start_off || self.partial_type == PartialType::ExtraLength {
+                        // No progress made or still reading varint
+                        return Ok((None, consumed));
+                    }
+                    // Continue to next state
+                }
+
+                PartialType::ExtraData(total_len) => {
+                    // Skip extra data (we don't validate it)
+                    let remaining = total_len - self.partial_len;
+                    let available = core::cmp::min(remaining, data.len() - off);
+
+                    off += available;
+                    consumed += available;
+                    self.partial_len += available;
+
+                    if self.partial_len >= total_len {
+                        // Done with extra data, move to commitment
+                        self.partial_type = PartialType::Commitment;
+                        self.partial_len = 0; // Reset for commitment
+                                              // Continue in next iteration
+                    } else {
+                        // Still skipping extra data
+                        return Ok((None, consumed));
+                    }
+                }
+
+                PartialType::Commitment => {
+                    // Read the 32-byte commitment
+                    let needed = 32 - self.partial_len;
+                    let available = core::cmp::min(needed, data.len() - off);
+
+                    self.partial_buffer[self.partial_len..self.partial_len + available]
+                        .copy_from_slice(&data[off..off + available]);
+
+                    off += available;
+                    consumed += available;
+                    self.partial_len += available;
+
+                    if self.partial_len >= 32 {
+                        // Commitment complete!
+                        let mut commitment = [0u8; 32];
+                        commitment.copy_from_slice(&self.partial_buffer[..32]);
+
+                        // Reset state for next transfer
+                        self.partial_type = PartialType::None;
+                        self.partial_len = 0;
+
+                        // Calculate and handle tail bytes to skip
+                        let tail_len = transfer_tail_len_after_commit(self.tx_version);
+                        let have = data.len().saturating_sub(off);
+                        let skip_now = core::cmp::min(tail_len, have);
+                        off += skip_now;
+                        consumed += skip_now;
+                        self.pending_tail_skip = tail_len - skip_now;
+
+                        self.transfers_parsed += 1;
+
+                        return Ok((Some(commitment), consumed));
+                    } else {
+                        // Still reading commitment
+                        return Ok((None, consumed));
+                    }
+                }
+            }
+
+            // Check if we've consumed all available data
+            if off >= data.len() {
                 return Ok((None, consumed));
             }
-            off += len;
+        }
+    }
+
+    fn continue_varint(&mut self, data: &[u8]) -> Result<(Option<usize>, usize), AppSW> {
+        let mut consumed = 0;
+
+        for &byte in data {
+            if self.partial_len >= 9 {
+                return Err(AppSW::TxParsingFail);
+            }
+
+            self.partial_buffer[self.partial_len] = byte;
+            self.partial_len += 1;
+            consumed += 1;
+
+            if byte & 0x80 == 0 {
+                // Varint complete, parse it
+                let (value, _) = read_varint(&self.partial_buffer[..self.partial_len])?;
+                return Ok((Some(value), consumed));
+            }
         }
 
-        // Extract commitment
-        if data.len() < off + 32 {
-            return Ok((None, consumed));
-        }
-
-        let mut commitment = [0u8; 32];
-        commitment.copy_from_slice(&data[off..off + 32]);
-        off += 32;
-
-        // Calculate and handle tail
-        let tail_len = transfer_tail_len_after_commit(self.tx_version);
-        let have = data.len().saturating_sub(off);
-        let take = core::cmp::min(tail_len, have);
-        off += take;
-        self.pending_tail_skip = tail_len - take;
-
-        self.transfers_parsed += 1;
-        consumed = off;
-
-        Ok((Some(commitment), consumed))
+        Ok((None, consumed))
     }
 }
 

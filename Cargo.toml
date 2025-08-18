@@ -16,7 +16,7 @@ include_gif = "1.2.2"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
+# panic = "abort"
 incremental = false
 
 [features]

@@ -7,6 +7,8 @@ pub fn sha3_512(data: &[u8]) -> Result<[u8; 64], AppSW> {
     let mut digest = [0u8; 64];
     let mut hasher = Sha3_512::new();
     hasher.update(data).map_err(|_| AppSW::TxHashFail)?;
-    hasher.finalize(&mut digest).map_err(|_| AppSW::TxHashFail)?;
+    hasher
+        .finalize(&mut digest)
+        .map_err(|_| AppSW::TxHashFail)?;
     Ok(digest)
 }

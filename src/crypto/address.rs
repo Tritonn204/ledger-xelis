@@ -1,7 +1,7 @@
 use crate::crypto::public_key::XelisPublicKey;
 use crate::crypto::ristretto::CompressedRistretto;
-use crate::AppSW;
 use crate::utils::{to_hex_string, to_hex_string_upper};
+use crate::AppSW;
 
 const PREFIX_ADDRESS: &str = "xel";
 const TESTNET_PREFIX_ADDRESS: &str = "xet";

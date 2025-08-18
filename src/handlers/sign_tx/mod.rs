@@ -1,5 +1,5 @@
 use crate::{
-    app_ui::sign::ui_display_tx,
+    app_ui::sign::ui_display_memo_tx,
     crypto::{
         commitment::{verify_pedersen_commitment, CommitmentVerifier},
         ristretto::*,
@@ -7,7 +7,8 @@ use crate::{
         signature::*,
     },
     utils::Bip32Path,
-    xlb::{self, memo_to_parsed_tx, parse_memo_tlv, MemoPreview},
+    xlb::*,
+    *,
     AppSW,
 };
 use alloc::vec::Vec;
@@ -19,8 +20,28 @@ mod tx_parser;
 pub use tx_parser::*;
 
 const MAX_TRANSACTION_LEN: usize = 1_048_576;
-const MAX_MEMO_SIZE: usize = 32 * 1024;
 const MAX_CHUNKS: u16 = 4500;
+
+// #[cfg(target_os = "nanos")]
+// const MAX_MEMO_SIZE: usize = 3 * 1024;  // 2KB for Nano S
+
+// #[cfg(target_os = "nanosplus")]
+// const MAX_MEMO_SIZE: usize = 3 * 1024;  // 4KB for Nano S Plus
+
+// #[cfg(target_os = "nanox")]
+// const MAX_MEMO_SIZE: usize = 8 * 1024;  // 8KB for Nano X
+
+// #[cfg(target_os = "stax")]
+// const MAX_MEMO_SIZE: usize = 16 * 1024;  // 16KB for Stax
+
+// #[cfg(target_os = "flex")]
+// const MAX_MEMO_SIZE: usize = 32 * 1024;  // 64KB for Flex
+
+// // Fallback for unknown targets
+// #[cfg(not(any(target_os = "nanos", target_os = "nanox", target_os = "nanosplus", target_os = "stax", target_os = "flex")))]
+// const MAX_MEMO_SIZE: usize = 4 * 1024;
+
+const MAX_MEMO_SIZE: usize = 3 * 1024 + 512;  // 3.5KB
 
 pub struct TxContext {
     // Hashing
@@ -112,7 +133,7 @@ pub fn handler_load_memo(
     ctx.memo_chunk_count += 1;
 
     if ctx.memo_buffer.len() + data.len() > MAX_MEMO_SIZE {
-        return Err(AppSW::TxWrongLength);
+        return Err(AppSW::MemoTooLarge);
     }
 
     ctx.memo_buffer.extend_from_slice(data);
@@ -122,11 +143,11 @@ pub fn handler_load_memo(
     }
 
     // Parse and approve memo
-    let preview = parse_memo_tlv(&ctx.memo_buffer)?;
-    let parsed = memo_to_parsed_tx(&preview);
-    ctx.memo_buffer.clear();
+    let preview = parse_memo_tlv(&mut ctx.memo_buffer)?;
+    // let parsed = memo_to_parsed_tx(&preview);
 
-    if ui_display_tx(&parsed)? {
+    // Ok(())
+    if ui_display_memo_tx(&preview)? {
         ctx.memo = Some(preview);
         ctx.preview_approved = true;
         Ok(())
@@ -146,36 +167,35 @@ pub fn handler_send_blinders(comm: &mut Comm, ctx: &mut TxContext) -> Result<(),
     let p1 = apdu_header.p1;
     let p2 = apdu_header.p2;
 
-    let mut blinders = Vec::new();
-
-    if p1 != 0 {
-        // Append to existing blinders (would need to store them in context)
-        // For now, we'll just collect new ones
+    // Reset on first chunk (p1 == 0)
+    if p1 == 0 {
+        ctx.verifier.init_blinders();
     }
 
+    // Add blinders from this chunk
     for chunk in data.chunks(32) {
         let mut blinder = [0u8; 32];
         blinder.copy_from_slice(chunk);
-        blinder.reverse();
-        blinders.push(blinder);
+        blinder.reverse();  // Convert from LE to BE for scalar operations
+        ctx.verifier.add_blinder(blinder);
     }
 
-    // Validate count if this is the last chunk
+    // Validate count if this is the last chunk (p2 has 0x80 bit set)
     if p2 & 0x80 != 0 {
         if let Some(memo) = &ctx.memo {
-            let expected_outputs = match memo.tx_type {
-                1 => memo.outs.len(),
-                0 => 1,
-                _ => 0,
-            };
+            unsafe {
+                let expected_outputs = match memo.tx_type {
+                    TX_TRANSFER => memo_ws_mut().outs.len(),
+                    _ => 0,
+                };
 
-            if blinders.len() != expected_outputs {
-                return Err(AppSW::TxParsingFail);
+                if ctx.verifier.blinder_count() != expected_outputs {
+                    return Err(AppSW::TxParsingFail);
+                }
             }
         }
     }
 
-    ctx.verifier.set_blinders(blinders);
     Ok(())
 }
 
@@ -206,9 +226,11 @@ pub fn handler_sign_tx(
         ctx.parser.reset();
 
         // Initialize verification
-        if let Some(memo) = &ctx.memo {
-            if memo.tx_type == 0 || memo.tx_type == 1 {
-                ctx.verifier.init_verification(memo.outs.len());
+        unsafe {
+            if let Some(memo) = &ctx.memo {
+                if memo.tx_type == 0 || memo.tx_type == 1 {
+                    ctx.verifier.init_verification(memo_ws_mut().outs.len());
+                }
             }
         }
 
@@ -255,26 +277,45 @@ fn parse_and_verify_stream(ctx: &mut TxContext, data: &[u8]) -> Result<(), AppSW
         offset += ctx.parser.parse_header(&data[offset..], memo)?;
     }
 
-    // Extract and verify commitments from transfers
-    if ctx.parser.in_transfers {
-        while ctx.parser.transfers_parsed < ctx.parser.transfer_count && offset < data.len() {
-            let (commitment, consumed) = ctx
-                .parser
-                .extract_commitment_from_transfer(&data[offset..])?;
+    match memo.tx_type {
+        TX_TRANSFER => {
+            // Extract and verify commitments from transfers
+            if ctx.parser.in_transfers {
+                while ctx.parser.transfers_parsed < ctx.parser.transfer_count && offset < data.len()
+                {
+                    let (commitment, consumed) = ctx
+                        .parser
+                        .extract_commitment_from_transfer(&data[offset..])?;
 
-            if let Some(c) = commitment {
-                let idx = (ctx.parser.transfers_parsed - 1) as usize;
-                let amount = match memo.tx_type {
-                    xlb::TX_TRANSFER => memo.outs[idx].amount,
-                    xlb::TX_BURN => memo.outs[0].amount,
-                    _ => return Err(AppSW::TxParsingFail),
-                };
+                    unsafe {
+                        if let Some(c) = commitment {
+                            let idx = (ctx.parser.transfers_parsed - 1) as usize;
+                            let amount = memo_ws_mut().outs[idx].amount;
+                            ctx.verifier.verify_output(idx, &c, amount)?;
+                        }
+                    }
 
-                ctx.verifier.verify_output(idx, &c, amount)?;
+                    offset += consumed;
+                    ctx.parser.bytes_seen += consumed;
+                }
             }
-
-            offset += consumed;
-            ctx.parser.bytes_seen += consumed;
+        }
+        TX_BURN => {
+            // Parse burn payload - no commitment verification
+            if ctx.parser.bytes_seen >= 35 && !ctx.parser.burn_parsed {
+                let consumed = ctx.parser.parse_burn(&data[offset..], memo)?;
+                offset += consumed;
+                ctx.parser.bytes_seen += consumed;
+            } else if ctx.parser.burn_parsed {
+                if offset < data.len() {
+                    return Err(AppSW::TxParsingFail);
+                }
+            }
+        }
+        _ => {
+            // Other transaction types - just consume bytes
+            offset = data.len();
+            ctx.parser.bytes_seen += data.len() - offset;
         }
     }
 
@@ -284,13 +325,26 @@ fn parse_and_verify_stream(ctx: &mut TxContext, data: &[u8]) -> Result<(), AppSW
 fn finalize_transaction(comm: &mut Comm, ctx: &mut TxContext) -> Result<(), AppSW> {
     // Final validation
     if let Some(memo) = &ctx.memo {
-        if memo.tx_type == 0 || memo.tx_type == 1 {
-            if !ctx.verifier.all_verified() {
-                return Err(AppSW::InvalidCommitment);
+        match memo.tx_type {
+            TX_TRANSFER => {
+                if !ctx.verifier.all_verified() {
+                    return Err(AppSW::InvalidCommitment);
+                }
+                unsafe {
+                    if ctx.verifier.verified_count() != memo_ws_mut().outs.len() {
+                        return Err(AppSW::InvalidCommitment);
+                    }
+                }
             }
-            if ctx.verifier.verified_count() != memo.outs.len() {
-                return Err(AppSW::InvalidCommitment);
+            TX_BURN => {
+                if !ctx.parser.burn_parsed {
+                    return Err(AppSW::TxParsingFail);
+                }
+                if ctx.total_size != 75 {
+                    return Err(AppSW::TxParsingFail);
+                }
             }
+            _ => {}
         }
     }
 

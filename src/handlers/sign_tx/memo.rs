@@ -1,11 +1,9 @@
 use crate::{
     AppSW,
-    xlb::{parse_memo_tlv, memo_to_parsed_tx},
+    xlb::*,
 };
 use tx_context::TxContext;
 use ledger_device_sdk::io::Comm;
-
-const MAX_MEMO_SIZE: usize = 32 * 1024;
 
 pub fn load_memo(
     comm: &mut Comm,
@@ -63,7 +61,7 @@ pub fn load_memo(
         
         // Initialize commitment verifier if needed
         let output_count = match preview.tx_type {
-            crate::xlb::TX_TRANSFER | crate::xlb::TX_BURN => preview.outs.len(),
+            crate::xlb::TX_TRANSFER | crate::xlb::TX_BURN => memo_ws_mut().outs.len(),
             _ => 0,
         };
         

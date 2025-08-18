@@ -1,97 +1,108 @@
 use crate::crypto::address::format_address_safe;
-use crate::tx_types::{ParsedTransaction, ParsedTransfer, XelisTxType};
 use crate::AppSW;
-use ledger_device_sdk::nbgl::{Field, NbglReview};
+use crate::xlb::*;
 
-use alloc::format;
+use ledger_device_sdk::nbgl::{Field, NbglReview};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use alloc::format;
 
-use crate::utils::{to_hex_string, to_hex_string_upper};
+use crate::utils::to_hex_string;
 
-pub fn ui_display_tx(tx: &ParsedTransaction) -> Result<bool, AppSW> {
-    // Build all owned (name, value) pairs first, then borrow from them.
-    let mut owned: Vec<(String, String)> = Vec::new();
+const FIELDS_PER_PAGE: usize = 10;
 
-    match &tx.tx_type {
-        XelisTxType::Transfer {
-            transfers,
-            total_count,
-        } => {
-            owned.push(("Type".into(), "Transfer".into()));
-            owned.push(("Outputs".into(), total_count.to_string()));
-
-            // Show EVERY output with address * asset * amount [* extra]
-            for (i, t) in transfers.iter().enumerate() {
-                let label = format!("Output {}", i + 1);
-                let addr = format_address_safe(&t.recipient, true, true, true);
-                let asset = format_asset(&t.asset);
-                let amt = format_amount(t.amount);
-
-                let mut value = format!("{addr}\n{asset}\n{amt}");
-                owned.push((label, value));
-            }
+pub fn ui_display_memo_tx(preview: &MemoPreview) -> Result<bool, AppSW> {
+    let ws = memo_ws_mut();
+    let total_fields = 4 + ws.outs.len();
+    let total_pages = (total_fields + FIELDS_PER_PAGE - 1) / FIELDS_PER_PAGE;
+    
+    for page in 0..total_pages {
+        let start_idx = page * FIELDS_PER_PAGE;
+        let end_idx = ((page + 1) * FIELDS_PER_PAGE).min(total_fields);
+        
+        let mut page_fields = Vec::with_capacity(end_idx - start_idx + 1);
+        
+        for i in start_idx..end_idx {
+            let field = build_field_at_index(preview, i)?;
+            page_fields.push(field);
         }
-
-        XelisTxType::Burn(burn) => {
-            owned.push(("Type".into(), "Burn".into()));
-            owned.push(("Asset".into(), format_asset(&burn.asset)));
-            owned.push(("Amount".into(), format_amount(burn.amount)));
-        }
-
-        XelisTxType::MultiSig(ms) => {
-            owned.push(("Type".into(), "MultiSig".into()));
-            owned.push(("Threshold".into(), ms.threshold.to_string()));
-            owned.push(("Participants".into(), ms.participants_count.to_string()));
-        }
-
-        XelisTxType::InvokeContract(c) => {
-            owned.push(("Type".into(), "Contract Call".into()));
-            owned.push(("Contract".into(), format_hash(&c.contract)));
-            owned.push(("Max Gas".into(), c.max_gas.to_string()));
-            owned.push(("Deposits".into(), c.deposits_count.to_string()));
-        }
-
-        XelisTxType::DeployContract {
-            has_constructor,
-            max_gas,
-        } => {
-            owned.push(("Type".into(), "Deploy Contract".into()));
-            owned.push((
-                "Constructor".into(),
-                if *has_constructor {
-                    "Yes".into()
-                } else {
-                    "No".into()
-                },
-            ));
-            owned.push(("Max Gas".into(), max_gas.to_string()));
+        
+        let field_refs: Vec<Field> = page_fields.iter()
+            .map(|(name, value)| Field {
+                name: name.as_str(),
+                value: value.as_str(),
+            })
+            .collect();
+        
+        let action_text = if page == total_pages - 1 { "Sign" } else { "Next" };
+        
+        let subtitle = format!("Section {}/{}", page + 1, total_pages);
+        let review = NbglReview::new()
+            .titles("Review Transaction", &subtitle, action_text)
+            .light();
+        
+        let approved = review.show(&field_refs);
+        
+        if !approved {
+            return Ok(false);
         }
     }
-
-    // Fee + Nonce last
-    owned.push(("Fee".into(), format_amount(tx.fee)));
-    owned.push(("Nonce".into(), tx.nonce.to_string()));
-
-    // Now build the NBGL fields borrowing from `owned`
-    let mut fields: Vec<Field> = Vec::with_capacity(owned.len());
-    for (name, value) in &owned {
-        fields.push(Field {
-            name: name.as_str(),
-            value: value.as_str(),
-        });
-    }
-
-    let review = NbglReview::new()
-        .titles("Review transaction", "", "Sign")
-        .light();
-
-    Ok(review.show(&fields))
+    
+    Ok(true)
 }
 
-fn format_asset(asset: &[u8; 32]) -> String {
-    const XELIS_ASSET: [u8; 32] = [0; 32]; // replace if main asset differs
-    if *asset == XELIS_ASSET {
+fn build_field_at_index(preview: &MemoPreview, index: usize) -> Result<(String, String), AppSW> {
+    let ws = memo_ws_mut();
+    
+    if index == 0 {
+        return Ok(("Type".to_string(), tx_type_name(preview.tx_type).to_string()));
+    }
+    
+    if index == 1 {
+        return Ok(("Outputs".to_string(), ws.outs.len().to_string()));
+    }
+    
+    let output_start = 2;
+    let output_end = output_start + ws.outs.len();
+    
+    if index >= output_start && index < output_end {
+        let out_idx = index - output_start;
+        let out = &ws.outs[out_idx];
+        
+        let label = format!("Output {}", out_idx + 1);
+        let addr = format_address_safe(&out.dest, true, true, true);
+        let asset = format_asset_from_index(out.asset_index);
+        let amt = format_amount(out.amount);
+        
+        let value = format!("{addr}\n{asset}\n{amt}");
+        return Ok((label, value));
+    }
+    
+    if index == output_end {
+        return Ok(("Fee".to_string(), format_amount(preview.fee)));
+    }
+    
+    if index == output_end + 1 {
+        return Ok(("Nonce".to_string(), preview.nonce.to_string()));
+    }
+    
+    Err(AppSW::TxDisplayFail)
+}
+
+fn tx_type_name(tx_type: u8) -> &'static str {
+    match tx_type {
+        TX_TRANSFER => "Transfer",
+        TX_BURN => "Burn",
+        TX_MULTISIG => "MultiSig",
+        TX_INVOKE_CONTRACT => "Contract Call",
+        TX_DEPLOY_CONTRACT => "Deploy Contract",
+        _ => "Unknown",
+    }
+}
+
+fn format_asset_from_index(index: u8) -> String {
+    let asset = get_memo_asset(index);
+    if asset == NATIVE_ASSET {
         "XELIS".to_string()
     } else {
         format!(
@@ -107,12 +118,4 @@ fn format_amount(amount: u64) -> String {
     let major = amount / 100_000_000;
     let minor = amount % 100_000_000;
     format!("{}.{:08}", major, minor)
-}
-
-fn format_hash(hash: &[u8; 32]) -> String {
-    format!(
-        "{}...{}",
-        to_hex_string_upper(&hash[..6]),
-        to_hex_string_upper(&hash[26..])
-    )
 }

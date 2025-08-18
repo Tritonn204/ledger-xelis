@@ -1,6 +1,6 @@
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::string::String;
 
 use crate::AppSW;
 use ledger_device_sdk::ecc::CxError;

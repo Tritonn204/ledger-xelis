@@ -325,13 +325,13 @@ impl RistrettoPoint {
             fe25519_mul(&mut t3, &t2, &t0)?;
             // t0=free, t1=u2, t2=inv_sqrt, t3=den1
 
-            // t0 = inv_sqrt * u2 (den2)  
+            // t0 = inv_sqrt * u2 (den2)
             fe25519_mul(&mut t0, &t2, &t1)?;
             // t0=den2, t1=free, t2=free, t3=den1
 
             // t1 = den1 * den2
             fe25519_mul(&mut t1, &t3, &t0)?;
-            
+
             // t2 = den1 * den2 * T (z_inv)
             fe25519_mul(&mut t2, &t1, &self.t)?;
             // t0=den2, t1=free, t2=z_inv, t3=den1
@@ -345,13 +345,13 @@ impl RistrettoPoint {
             if rotate {
                 // t4 = Y * sqrt(-1) (iy)
                 fe25519_mul(&mut t4, &self.y, &FE25519_SQRTM1)?;
-                
+
                 // t5 = X * sqrt(-1) (ix)
                 fe25519_mul(&mut t5, &self.x, &FE25519_SQRTM1)?;
-                
+
                 // t1 = den1 * invsqrt(a-d) (eden -> den_inv)
                 fe25519_mul(&mut t1, &t3, &ED25519_INVSQRTAMD)?;
-                
+
                 // x_ = iy (t4), y_ = ix (t5), den_inv = eden (t1)
             } else {
                 // x_ = X, y_ = Y, den_inv = den2
@@ -386,7 +386,8 @@ impl RistrettoPoint {
             }
 
             Ok(CompressedRistretto(s))
-        })().map_err(|_| AppSW::KeyDeriveFail)
+        })()
+        .map_err(|_| AppSW::KeyDeriveFail)
     }
 }
 
@@ -458,7 +459,7 @@ pub fn scalar_mult_ristretto(
 ) -> Result<RistrettoPoint, AppSW> {
     let mut result = IDENTITY_POINT;
     let mut temp = *point;
-    
+
     for i in 0..256 {
         let byte_idx = 31 - (i / 8);
         let bit_idx = i % 8;
@@ -486,7 +487,7 @@ pub fn edwards_add(p: &RistrettoPoint, q: &RistrettoPoint) -> Result<RistrettoPo
         fe25519_sub(&mut t1, &q.y, &q.x)?;
         // t2 = A = (Y1-X1)*(Y2-X2)
         fe25519_mul(&mut t2, &t0, &t1)?;
-        
+
         // t0 = (Y1+X1)
         fe25519_add(&mut t0, &p.y, &p.x)?;
         // t1 = (Y2+X2)
@@ -508,15 +509,15 @@ pub fn edwards_add(p: &RistrettoPoint, q: &RistrettoPoint) -> Result<RistrettoPo
 
         // t0 = E = B - A
         fe25519_sub(&mut t0, &t3, &t2)?;
-        
-        // t1 = H = B + A  
+
+        // t1 = H = B + A
         fe25519_add(&mut t1, &t3, &t2)?;
-        
+
         // Now A,B are consumed, can reuse t2,t3
-        
+
         // t2 = F = D - C
         fe25519_sub(&mut t2, &t5, &t4)?;
-        
+
         // t3 = G = D + C
         fe25519_add(&mut t3, &t5, &t4)?;
 
@@ -528,7 +529,7 @@ pub fn edwards_add(p: &RistrettoPoint, q: &RistrettoPoint) -> Result<RistrettoPo
 
         // X3 = E*F
         fe25519_mul(&mut x3, &t0, &t2)?;
-        // Y3 = G*H  
+        // Y3 = G*H
         fe25519_mul(&mut y3, &t3, &t1)?;
         // T3 = E*H
         fe25519_mul(&mut t3_out, &t0, &t1)?;
@@ -541,7 +542,8 @@ pub fn edwards_add(p: &RistrettoPoint, q: &RistrettoPoint) -> Result<RistrettoPo
             z: z3,
             t: t3_out,
         })
-    })().map_err(|_| AppSW::KeyDeriveFail)
+    })()
+    .map_err(|_| AppSW::KeyDeriveFail)
 }
 
 pub fn xelis_derive_public_key(private_key: &[u8; 32]) -> Result<CompressedRistretto, AppSW> {

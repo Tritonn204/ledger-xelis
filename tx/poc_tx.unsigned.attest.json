@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "timestamp": 1755401861,
+  "timestamp": 1755410163,
   "bip32_path": "m/44'/587'/0'/0/0",
   "device_pubkey_hex": "6a1311c52b47503b079f38bb9b20b762029a106c455d1291c8ec3db43fade772",
   "tx_len": 1729,

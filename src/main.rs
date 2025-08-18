@@ -80,11 +80,16 @@ pub enum AppSW {
     KeyDeriveFail = 0xB009,
     VersionParsingFail = 0xB00A,
     WrongApduLength = StatusWords::BadLen as u16,
-    MemoRequired = 0xB00C,
-    MemoInvalid = 0xB00D,
+
+    OutOfMemory = 0xB00F,
     InvalidCommitment = 0xC000,
     BlindersRequired = 0xC001,
     InvalidCompressedRistretto = 0xC002,
+
+    MemoRequired = 0xD000,
+    MemoInvalid = 0xD001,
+    MemoTooLarge = 0xD002,
+
     Ok = 0x9000,
     CryptoError = 0x6F00,
     AddressError = 0x6F01,

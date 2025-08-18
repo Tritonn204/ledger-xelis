@@ -137,14 +137,22 @@ def send_blinders_if_any(dongle, blinders: list[bytes]):
     # Send up to 7 blinders per APDU (7 * 32 = 224 bytes, fits in 255 byte limit)
     BLINDERS_PER_CHUNK = 7
     
+    chunk_idx = 0
     for i in range(0, len(blinders), BLINDERS_PER_CHUNK):
         chunk_blinders = blinders[i:i+BLINDERS_PER_CHUNK]
         chunk_data = b''.join(chunk_blinders)
         
-        p1 = i // BLINDERS_PER_CHUNK  # chunk index
-        p2 = P2_LAST if i + BLINDERS_PER_CHUNK >= len(blinders) else P2_MORE
+        # First chunk should have p1=0, subsequent chunks increment
+        p1 = 0 if chunk_idx == 0 else chunk_idx
+        
+        # Last chunk should have p2 with 0x80 bit set
+        is_last = (i + BLINDERS_PER_CHUNK >= len(blinders))
+        p2 = 0x80 if is_last else 0x00
+        
+        print(f"  Chunk {chunk_idx}: {len(chunk_blinders)} blinders, p1={p1}, p2=0x{p2:02x}")
         
         apdu_exchange(dongle, CLA, INS_SEND_BLINDERS, p1, p2, chunk_data)
+        chunk_idx += 1
     
     print(f"✓ Blinders sent")
 
@@ -205,7 +213,7 @@ def save_attestation(base_path: str, bip32_path: str, tx_bytes: bytes, sig_resp:
     print(f"✓ Wrote attestation: {out_path}")
 
 def main():
-    default_path = "tx/poc_tx.unsigned.bundle"
+    default_path = "tx/poc_transfer.unsigned.bundle"
     path = os.environ.get("XELIS_SRC", default_path)
     
     print(f"📁 Loading: {path}")
