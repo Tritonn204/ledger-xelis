@@ -1,8 +1,6 @@
 use crate::{xlb::*, AppSW};
 use alloc::vec::Vec;
 
-const EXPECTED_BURN_SIZE: usize = 75;
-
 pub struct TxStreamParser {
     pub bytes_seen: usize,
     pub tx_version: u8,
@@ -16,6 +14,8 @@ pub struct TxStreamParser {
     pub partial_type: PartialType,
     pub burn_parsed: bool,
 }
+
+pub const BURN_V1_LEN: [usize; 2] = [1062, 1382];
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PartialType {
@@ -136,33 +136,21 @@ impl TxStreamParser {
             offset += 1;
         }
 
-        unsafe {
-            // Check if we have complete burn payload
-            if self.partial_len == BURN_PAYLOAD_SIZE {
-                // Validate burn structure
-                if memo_ws_mut().outs.len() != 1 {
+        if self.partial_len == BURN_PAYLOAD_SIZE {
+            let amount = u64::from_be_bytes(self.partial_buffer[32..40].try_into().unwrap());
+
+            unsafe {
+                if let Some(burn) = memo_ws_mut().burn.as_ref() {
+                    if amount != burn.amount {
+                        return Err(AppSW::TxParsingFail);
+                    }
+                } else {
                     return Err(AppSW::TxParsingFail);
                 }
-
-                // Extract and validate amount (bytes 32-39 of payload)
-                let amount_bytes: [u8; 8] = self.partial_buffer[32..40]
-                    .try_into()
-                    .map_err(|_| AppSW::TxParsingFail)?;
-                let amount = u64::from_le_bytes(amount_bytes);
-
-                // Verify amount matches memo
-                if amount != memo_ws_mut().outs[0].amount {
-                    return Err(AppSW::TxParsingFail);
-                }
-
-                // Mark burn as parsed
-                self.burn_parsed = true;
-                self.partial_len = 0;
             }
-        }
 
-        if self.bytes_seen + offset > EXPECTED_BURN_SIZE {
-            return Err(AppSW::TxParsingFail);
+            self.burn_parsed = true;
+            self.partial_len = 0;
         }
 
         Ok(offset)

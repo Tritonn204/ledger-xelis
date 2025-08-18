@@ -213,7 +213,7 @@ def save_attestation(base_path: str, bip32_path: str, tx_bytes: bytes, sig_resp:
     print(f"✓ Wrote attestation: {out_path}")
 
 def main():
-    default_path = "tx/poc_transfer.unsigned.bundle"
+    default_path = "tx/poc_burn.unsigned.bundle"
     path = os.environ.get("XELIS_SRC", default_path)
     
     print(f"📁 Loading: {path}")

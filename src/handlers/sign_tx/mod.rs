@@ -101,6 +101,11 @@ impl TxContext {
         self.sign_succeeded = false;
         self.parser.reset();
         self.verifier.reset();
+
+        unsafe { 
+            let ws = memo_ws_mut(); 
+            ws.clear(); 
+        }
     }
 }
 
@@ -306,11 +311,10 @@ fn parse_and_verify_stream(ctx: &mut TxContext, data: &[u8]) -> Result<(), AppSW
                 let consumed = ctx.parser.parse_burn(&data[offset..], memo)?;
                 offset += consumed;
                 ctx.parser.bytes_seen += consumed;
-            } else if ctx.parser.burn_parsed {
-                if offset < data.len() {
-                    return Err(AppSW::TxParsingFail);
-                }
             }
+
+            let rem = data.len().saturating_sub(offset);
+            ctx.parser.bytes_seen += rem;
         }
         _ => {
             // Other transaction types - just consume bytes
@@ -323,7 +327,6 @@ fn parse_and_verify_stream(ctx: &mut TxContext, data: &[u8]) -> Result<(), AppSW
 }
 
 fn finalize_transaction(comm: &mut Comm, ctx: &mut TxContext) -> Result<(), AppSW> {
-    // Final validation
     if let Some(memo) = &ctx.memo {
         match memo.tx_type {
             TX_TRANSFER => {
@@ -340,7 +343,13 @@ fn finalize_transaction(comm: &mut Comm, ctx: &mut TxContext) -> Result<(), AppS
                 if !ctx.parser.burn_parsed {
                     return Err(AppSW::TxParsingFail);
                 }
-                if ctx.total_size != 75 {
+                let expected = unsafe {
+                    match memo_ws_mut().burn.as_ref() {
+                        Some(b) => BURN_V1_LEN[(b.asset_index != NATIVE_ASSET_INDEX) as usize],
+                        None => return Err(AppSW::TxParsingFail),
+                    }
+                };
+                if ctx.total_size != expected {
                     return Err(AppSW::TxParsingFail);
                 }
             }
@@ -352,7 +361,7 @@ fn finalize_transaction(comm: &mut Comm, ctx: &mut TxContext) -> Result<(), AppS
     let mut hash = [0u8; 64];
     ctx.tx_hasher
         .finalize(&mut hash)
-        .map_err(|_| AppSW::TxSignFail)?;
+        .map_err(|_| AppSW::TxHashFail)?;
     ctx.tx_hash = Some(hash);
 
     // Sign

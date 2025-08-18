@@ -13,79 +13,95 @@ const FIELDS_PER_PAGE: usize = 10;
 
 pub fn ui_display_memo_tx(preview: &MemoPreview) -> Result<bool, AppSW> {
     let ws = memo_ws_mut();
-    let total_fields = 4 + ws.outs.len();
+
+    // Compute total fields by tx type
+    let total_fields = match preview.tx_type {
+        TX_BURN => 5,                 // Type, Asset, Amount, Fee, Nonce
+        _ => 4 + ws.outs.len(),       // Type, Outputs, [each output], Fee, Nonce
+    };
+
     let total_pages = (total_fields + FIELDS_PER_PAGE - 1) / FIELDS_PER_PAGE;
-    
+
     for page in 0..total_pages {
         let start_idx = page * FIELDS_PER_PAGE;
         let end_idx = ((page + 1) * FIELDS_PER_PAGE).min(total_fields);
-        
+
         let mut page_fields = Vec::with_capacity(end_idx - start_idx + 1);
-        
+
         for i in start_idx..end_idx {
             let field = build_field_at_index(preview, i)?;
             page_fields.push(field);
         }
-        
+
         let field_refs: Vec<Field> = page_fields.iter()
-            .map(|(name, value)| Field {
-                name: name.as_str(),
-                value: value.as_str(),
-            })
+            .map(|(name, value)| Field { name: name.as_str(), value: value.as_str() })
             .collect();
-        
+
         let action_text = if page == total_pages - 1 { "Sign" } else { "Next" };
-        
+
         let subtitle = format!("Section {}/{}", page + 1, total_pages);
         let review = NbglReview::new()
             .titles("Review Transaction", &subtitle, action_text)
             .light();
-        
+
         let approved = review.show(&field_refs);
-        
         if !approved {
             return Ok(false);
         }
     }
-    
+
     Ok(true)
 }
 
 fn build_field_at_index(preview: &MemoPreview, index: usize) -> Result<(String, String), AppSW> {
     let ws = memo_ws_mut();
-    
+
+    // Burn layout: [0]Type [1]Asset [2]Amount [3]Fee [4]Nonce
+    if preview.tx_type == TX_BURN {
+        let b = ws.burn.as_ref().ok_or(AppSW::TxDisplayFail)?;
+        return Ok(match index {
+            0 => ("Type".into(), "Burn".into()),
+            1 => ("Asset".into(), format_asset_from_index(b.asset_index)),
+            2 => ("Amount".into(), format_amount(b.amount)),
+            3 => ("Fee".into(), format_amount(preview.fee)),
+            4 => ("Nonce".into(), preview.nonce.to_string()),
+            _ => return Err(AppSW::TxDisplayFail),
+        });
+    }
+
+    // Default (Transfer, etc.)
     if index == 0 {
         return Ok(("Type".to_string(), tx_type_name(preview.tx_type).to_string()));
     }
-    
+
     if index == 1 {
         return Ok(("Outputs".to_string(), ws.outs.len().to_string()));
     }
-    
+
     let output_start = 2;
     let output_end = output_start + ws.outs.len();
-    
+
     if index >= output_start && index < output_end {
         let out_idx = index - output_start;
         let out = &ws.outs[out_idx];
-        
+
         let label = format!("Output {}", out_idx + 1);
         let addr = format_address_safe(&out.dest, true, true, true);
         let asset = format_asset_from_index(out.asset_index);
         let amt = format_amount(out.amount);
-        
+
         let value = format!("{addr}\n{asset}\n{amt}");
         return Ok((label, value));
     }
-    
+
     if index == output_end {
         return Ok(("Fee".to_string(), format_amount(preview.fee)));
     }
-    
+
     if index == output_end + 1 {
         return Ok(("Nonce".to_string(), preview.nonce.to_string()));
     }
-    
+
     Err(AppSW::TxDisplayFail)
 }
 

@@ -15,7 +15,8 @@ pub const TAG_FEE: u8 = 0x02;
 pub const TAG_NONCE: u8 = 0x03;
 pub const TAG_ASSET_TABLE: u8 = 0x04;  // New: asset table
 pub const TAG_OUT_COUNT: u8 = 0x10;
-pub const TAG_OUT_ITEM: u8 = 0x20;  // Modified: now uses asset index instead of full hash
+pub const TAG_OUT_ITEM: u8 = 0x20;
+pub const TAG_BURN: u8 = 0x30;
 
 // Native asset is always index 0 (not stored in table)
 pub const NATIVE_ASSET_INDEX: u8 = 0;
@@ -26,15 +27,17 @@ use core::mem::MaybeUninit;
 pub struct MemoWorkspace {
     pub asset_table: Vec<[u8; 32]>,
     pub outs: Vec<MemoOut>,
+    pub burn: Option<MemoBurn>,
 }
 
 impl MemoWorkspace {
     #[inline] fn new() -> Self {
-        Self { asset_table: Vec::new(), outs: Vec::new() }
+        Self { asset_table: Vec::new(), outs: Vec::new(), burn: None }
     }
-    #[inline] fn clear(&mut self) {
+    #[inline] pub fn clear(&mut self) {
         self.asset_table.clear();
         self.outs.clear();
+        self.burn = None;
     }
 }
 
@@ -85,6 +88,12 @@ pub struct MemoPreview {
     pub tx_type: u8,
     pub fee: u64,
     pub nonce: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoBurn {
+    pub asset_index: u8,
+    pub amount: u64,
 }
 
 /// Read unsigned LEB128 (u64).
@@ -224,6 +233,20 @@ pub fn parse_memo_tlv(memo: &[u8]) -> Result<MemoPreview, AppSW> {
                         extra_len,
                         preview,
                     });
+                },
+                TAG_BURN => {
+                    if val.len() < 1 + 8 { return Err(AppSW::MemoInvalid); }
+                    let asset_index = val[0];
+                    if asset_index > 0 && (asset_index as usize) > ws.asset_table.len() {
+                        return Err(AppSW::MemoInvalid);
+                    }
+                    let amount = u64::from_le_bytes(val[1..9].try_into().unwrap());
+                    let mut p = 9;
+                    let (pv_len, pn) = read_leb128(val, p)?; p = pn;
+                    if p + (pv_len as usize) > val.len() { return Err(AppSW::MemoInvalid); }
+                    let preview = val[p..p + pv_len as usize].to_vec();
+
+                    ws.burn = Some(MemoBurn { asset_index, amount });
                 }
                 _ => {
                     // Unknown tag: ignore (forward compatible)
