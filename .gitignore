@@ -22,3 +22,6 @@ __pycache__/
 ledger/
 # Build directory
 build/
+
+# App artifacts
+*.map
