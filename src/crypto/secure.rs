@@ -70,26 +70,17 @@ pub fn secure_wipe(bytes: &mut [u8]) {
     compiler_fence(Ordering::SeqCst);
 }
 
-/// Execute a closure with derived key material that auto-wipes
-///
-/// This function handles BIP32 key derivation and provides the derived
-/// key material to a closure in a secure manner. All sensitive data
-/// is automatically wiped when the closure completes.
-///
-/// # Arguments
-/// * `path` - BIP32 derivation path
-/// * `f` - Closure that receives (scalar, chain_code) as SensitiveBytes
-///
-/// # Returns
-/// The result of the closure, or an error if derivation fails
-pub fn with_derived_key<F, R>(path: &[u32], f: F) -> Result<R, AppSW>
+/// Single core: always derive (64B key, 32B chain code), expose 32B scalar view.
+/// Kept non-inlined to avoid code bloat from monomorphization.
+#[inline(never)]
+pub fn with_derived_core<F, R>(path: &[u32], f: F) -> Result<R, AppSW>
 where
     F: FnOnce(&mut SensitiveBytes<32>, &mut SensitiveBytes<32>) -> Result<R, AppSW>,
 {
+    // OS requires 64-byte buffer for Secp256k1/Secp256r1/Ed25519
     let mut key_buffer = SensitiveBytes::<64>::new();
     let mut chain_code = SensitiveBytes::<32>::new();
 
-    // Derive key material using Ed25519 domain
     bip32_derive(
         CurvesId::Ed25519,
         path,
@@ -99,26 +90,29 @@ where
     .map_err(|_| AppSW::KeyDeriveFail)?;
 
     let mut scalar = SensitiveBytes::<32>::new();
-    scalar.copy_from_slice(&key_buffer.as_ref()[..32]);
+    scalar.as_mut().copy_from_slice(&key_buffer.as_ref()[..32]);
 
-    // Ed25519 clamping (required for valid scalars)
-    let scalar_bytes = scalar.as_mut();
-    scalar_bytes[31] &= 248; // Clear lowest 3 bits
-    scalar_bytes[0] &= 63; // Clear highest 2 bits
-    scalar_bytes[0] |= 64; // Set second highest bit
-
-    // Execute user function - scalar_invert will handle reduction
     f(&mut scalar, &mut chain_code)
 }
 
-/// Execute a closure with derived key material (no chain code needed)
-///
-/// Simplified version when you don't need the chain code.
-pub fn with_derived_scalar<F, R>(path: &[u32], f: F) -> Result<R, AppSW>
+/// Convenience: caller only needs the scalar.
+/// This is a thin shim around `with_derived_core`.
+#[inline]
+pub fn with_derived_key<F, R>(path: &[u32], f: F) -> Result<R, AppSW>
 where
     F: FnOnce(&mut SensitiveBytes<32>) -> Result<R, AppSW>,
 {
-    with_derived_key(path, |scalar, _chain_code| f(scalar))
+    with_derived_core(path, |scalar, _cc| f(scalar))
+}
+
+/// Convenience: caller needs scalar + chain code.
+/// Alias to the core function to keep old call-sites working.
+#[inline]
+pub fn with_derived_key_chain<F, R>(path: &[u32], f: F) -> Result<R, AppSW>
+where
+    F: FnOnce(&mut SensitiveBytes<32>, &mut SensitiveBytes<32>) -> Result<R, AppSW>,
+{
+    with_derived_core(path, f)
 }
 
 /// Constant-time comparison of byte arrays

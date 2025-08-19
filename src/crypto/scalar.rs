@@ -8,7 +8,7 @@ use ledger_device_sdk::random;
 
 /// Check if a scalar is zero
 pub fn is_zero(scalar: &[u8; 32]) -> bool {
-    scalar.iter().all(|&b| b == 0)
+    secure::constant_time_eq(scalar, &[0u8; 32])
 }
 
 /// Reduce a scalar modulo the group order L

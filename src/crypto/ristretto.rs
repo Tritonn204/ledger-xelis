@@ -90,7 +90,12 @@ pub struct RistrettoPoint {
 
 #[inline(always)]
 pub fn is_zero(bytes: &[u8]) -> bool {
-    bytes.iter().all(|&b| b == 0)
+    let mut acc: u8 = 0;
+    for &b in bytes {
+        acc |= b;
+    }
+    let nz = (acc | acc.wrapping_neg()) >> 7;
+    nz == 0
 }
 
 #[inline(always)]

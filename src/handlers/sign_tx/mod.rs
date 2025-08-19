@@ -370,15 +370,12 @@ fn finalize_transaction(comm: &mut Comm, ctx: &mut TxContext) -> Result<(), AppS
 
 fn compute_signature_and_append(comm: &mut Comm, ctx: &TxContext) -> Result<(), AppSW> {
     let tx_hash = ctx.tx_hash.ok_or(AppSW::TxHashFail)?;
-
-    with_derived_key(ctx.path.as_ref(), |private_key, _| {
-        let pubkey = xelis_public_from_private(private_key.as_ref())?;
-        let signature = schnorr_sign(private_key.as_ref(), &pubkey, &tx_hash)?;
-
-        let sig_bytes = signature.to_le_bytes();
-        comm.append(&[64u8]);
-        comm.append(&sig_bytes);
-
-        Ok(())
-    })
+    let signature = with_derived_key(ctx.path.as_ref(), |sk| {
+        let pubkey = xelis_public_from_private(sk.as_ref())?;
+        schnorr_sign(sk.as_ref(), &pubkey, &tx_hash)
+    })?;
+    let sig_bytes = signature.to_le_bytes();
+    comm.append(&[64u8]);
+    comm.append(&sig_bytes);
+    Ok(())
 }
