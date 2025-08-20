@@ -458,21 +458,47 @@ pub fn ristretto255_sqrt_ratio_m1(
     Ok((has_m_root || has_p_root || has_f_root, has_m_root))
 }
 
+#[inline(always)]
+fn ct_select_point(out: &mut RistrettoPoint,
+                   a: &RistrettoPoint,
+                   b: &RistrettoPoint,
+                   mask: u8) {
+    // mask = 0xFF → pick a, mask = 0x00 → pick b
+    for i in 0..32 {
+        out.x[i] = (a.x[i] & mask) | (b.x[i] & !mask);
+        out.y[i] = (a.y[i] & mask) | (b.y[i] & !mask);
+        out.z[i] = (a.z[i] & mask) | (b.z[i] & !mask);
+        out.t[i] = (a.t[i] & mask) | (b.t[i] & !mask);
+    }
+}
+
 pub fn scalar_mult_ristretto(
     scalar: &[u8; 32],
     point: &RistrettoPoint,
 ) -> Result<RistrettoPoint, AppSW> {
     let mut result = IDENTITY_POINT;
-    let mut temp = *point;
+    let mut temp   = *point;         // running 2^i * point
+    let mut addend = IDENTITY_POINT; // CT-selected each iteration
 
+    // LSB-first, matches your previous logic
     for i in 0..256 {
-        let byte_idx = 31 - (i / 8);
-        let bit_idx = i % 8;
-        if (scalar[byte_idx] >> bit_idx) & 1 != 0 {
-            result = edwards_add(&result, &temp)?;
-        }
+        let byte_idx = 31 - (i >> 3);       // same as /8 but cheaper
+        let bit_idx  = i & 7;               // same as %8 but cheaper
+        let bit      = (scalar[byte_idx] >> bit_idx) & 1;
+
+        // 0xFF if bit==1, else 0x00 — no branching
+        let mask = 0u8.wrapping_sub(bit);
+
+        // addend = bit ? temp : IDENTITY_POINT
+        ct_select_point(&mut addend, &temp, &IDENTITY_POINT, mask);
+
+        // result += addend (always executed)
+        result = edwards_add(&result, &addend)?;
+
+        // temp = 2*temp (always executed)
         temp = edwards_add(&temp, &temp)?;
     }
+
     Ok(result)
 }
 
@@ -549,26 +575,6 @@ pub fn edwards_add(p: &RistrettoPoint, q: &RistrettoPoint) -> Result<RistrettoPo
         })
     })()
     .map_err(|_| AppSW::KeyDeriveFail)
-}
-
-pub fn xelis_derive_public_key(private_key: &[u8; 32]) -> Result<CompressedRistretto, AppSW> {
-    // private_key should be in BE format
-    if is_zero(private_key) {
-        return Err(AppSW::KeyDeriveFail);
-    }
-
-    // The private key should already be reduced modulo L
-    let mut scalar = *private_key;
-    scalar_reduce(&mut scalar).map_err(|_| AppSW::KeyDeriveFail)?;
-
-    // Compute s^(-1)
-    let s_inv = scalar_invert(&scalar)?;
-
-    // We need to do scalar multiplication: s^(-1) * H
-    let result = scalar_mult_ristretto(&s_inv, &XELIS_H_POINT)?;
-
-    // Compress the result
-    result.compress()
 }
 
 // Xelis-specific public key derivation

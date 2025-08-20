@@ -13,7 +13,7 @@ impl XelisPublicKey {
     }
 
     pub fn from_private_key(private_key: &[u8; 32]) -> Result<Self, AppSW> {
-        let compressed = xelis_derive_public_key(private_key)?;
+        let compressed = xelis_public_from_private(private_key)?;
         Ok(Self { compressed })
     }
 }
